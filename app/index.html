@@ -467,18 +467,8 @@ td.neg{color:var(--tomato)}
 .asst .chatlog{max-height:420px;min-height:120px}
 .asst .chatlog li{max-width:92%}
 .asst .chatlog .bot{background:rgba(255,255,255,.1);color:var(--cream)}
-.gem{margin-top:12px;border-top:1px solid rgba(255,255,255,.14);padding-top:10px}
-.gemrow{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-.gemst{font-size:.8rem;color:#cfe2d6}.gemst::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--tomato);margin-inline-end:7px}
-.gemst.on::before{background:var(--lime)}
-.gem .link{color:var(--lime)}
-.gemform{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;align-items:end;margin-top:10px}
-.gemform label{display:grid;gap:4px;font-size:.78rem;color:#cfe2d6}
-.gemform input{font:inherit;font-size:.9rem;border:0;border-radius:10px;padding:8px 10px;background:var(--cream);color:var(--forest);min-width:0}
-.gemform small{grid-column:1/-1;color:#cfe2d6;font-size:.76rem;line-height:1.6}
-.gembtns{display:flex;gap:12px;align-items:center}
 .via{display:block;font-size:.7rem;font-weight:700;opacity:.75;margin-bottom:3px}
-.via.v-web{color:var(--sun)}.via.v-store{color:var(--lime)}
+.via.v-web,.via.v-calc{color:var(--sun)}.via.v-store{color:var(--lime)}
 .srcs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .srcs a{font-size:.72rem;color:var(--lime);border:1px solid rgba(255,255,255,.25);border-radius:99px;padding:2px 9px;text-decoration:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -2135,90 +2125,150 @@ function normAction(a,A){
   }
   return null;
 }
-/* ---------- independent agent (Gemini): routes each question to store data or to web search ---------- */
-const GEM_DEFAULT="gemini-3.8-flash";
-const GemCfg={
-  mem:{},
-  get(k){try{const v=localStorage.getItem("khudra.gem."+k);if(v!=null)return v;}catch(e){}return this.mem[k]||"";},
-  set(k,v){this.mem[k]=v;try{v?localStorage.setItem("khudra.gem."+k,v):localStorage.removeItem("khudra.gem."+k);}catch(e){}},
-  key(){return this.get("key");},model(){return this.get("model")||GEM_DEFAULT;}
-};
-let gemOpen=false,gemModels=[];
-async function gemCall(body,signal){
-  const res=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":generateContent",{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":GemCfg.key()},body:JSON.stringify(body)});
-  let j=null;try{j=await res.json();}catch(e){}
-  if(!res.ok){const err=new Error(j?.error?.message||("HTTP "+res.status));err.status=res.status;throw err;}
-  const c=j?.candidates?.[0];
-  const text=(c?.content?.parts||[]).map(p=>p.text||"").join("").trim();
-  const seen=new Set(),sources=[];
-  for(const g of c?.groundingMetadata?.groundingChunks||[]){const u=g?.web?.uri;if(u&&/^https?:\/\//.test(u)&&!seen.has(u)){seen.add(u);sources.push({url:u,title:String(g.web.title||u).slice(0,60)});}}
-  return {text,sources:sources.slice(0,4)};
+/* ---------- built-in assistant: no external AI model.
+   1) intent engine over the live store state (answers + typed actions)
+   2) retrieval QA for everything else: Wikipedia search + sentence ranking, or local arithmetic ---------- */
+const AR_NORM=s=>String(s||"").toLowerCase().replace(/[ً-ْٰـ]/g,"").replace(/[أإآ]/g,"ا").replace(/ة/g,"ه").replace(/ى/g,"ي").replace(/ؤ/g,"و").replace(/ئ/g,"ي").replace(/[٠-٩]/g,d=>"٠١٢٣٤٥٦٧٨٩".indexOf(d)).replace(/[^ء-يa-z0-9%.+\-*/()×÷ ]/g," ").replace(/\s+/g," ").trim();
+const AR_STEM=w=>{w=w.replace(/^(وال|بال|كال|فال|لل|ال)/,"");if(w.length>3)w=w.replace(/^[وفبلك](?=.{3,})/,"");return w.length>4?w.replace(/(ات|ان|ين|ون|ها|هم|نا|تي|ته|يه|ه|ي)$/,""):w;};
+const STOP=new Set("كم ما ماذا هل من في على عن الى هو هي هذا هذه ذلك التي الذي و او ثم لا لم لن ان اذا مع كيف متى اين وش ايش ليش لماذا يا لي لك عند عندنا عدد the a an of in on is are was what who how many much when where why does do did to and or for".split(" "));
+const TOK=s=>AR_NORM(s).split(" ").filter(w=>w&&!STOP.has(w)).map(AR_STEM).filter(w=>w.length>1);
+const INTENTS=[
+  ["order",   "نطلب اطلب طلبيه شراء اشتري نشتري ينقص نقص يخلص reorder order buy purchase restock run out"],
+  ["stock",   "مخزون المخزون كميه باقي متوفر عندنا stock inventory left remaining available"],
+  ["waste",   "هدر تالف ينتهي انتهاء صلاحيه يخرب يفسد waste spoil expire expiry"],
+  ["sales",   "مبيعات المبيعات دخل ايراد بعنا طلبات الطلبات فاتوره sales revenue orders ticket sold"],
+  ["profit",  "ربح الربح ارباح صافي خساره هامش تعادل profit margin loss break even"],
+  ["costs",   "تكاليف التكاليف مصاريف تكلفه اقلل اوفر توفير ايجار costs cost expenses cut save rent"],
+  ["forecast","توقع التوقع متوقع المتوقع بكره غدا القادم forecast tomorrow expect predict"],
+  ["promo",   "عرض عروض خصم تسويق حمله ازيد نزيد قليل ضعيف هادي promo promotion discount marketing campaign low slow lift"],
+  ["design",  "بوستر تصميم اعلان بانر شعار منشور poster design banner ad post"],
+  ["menu",    "منيو الاطباق طبق صحن صحون سلطه سلطات هوامش menu bowl bowls dish seller"],
+  ["staff",   "موظف موظفين ورديه دوام عماله شفت staff shift roster labor employees"],
+  ["supplier","مورد موردين المورد الموردين توريد supplier suppliers vendor delivery"],
+  ["branch",  "فرع فروع الفروع توسع افتتاح branch branches expansion"],
+  ["loyalty", "ولاء نقاط كود اكواد مشاركه loyalty points code share"],
+  ["help",    "مساعده تقدر تسوي وش تعرف مرحبا هلا السلام اهلا help hello hi what can you"]
+].map(([id,w])=>[id,new Set(w.split(" ").map(x=>AR_STEM(AR_NORM(x))))]);
+function findItems(q){
+  const n=" "+AR_NORM(q)+" ",hit=[];
+  for(const [k,i] of Object.entries(ING)){const a=AR_NORM(i.ar),e=AR_NORM(i.en);const words=[...a.split(" "),...e.split(" ")].filter(w=>w.length>=4&&!/^(مشوي|مسلوق|حلوه|كرزيه|بالليمون|grilled|boiled|sweet|cherry|with)$/.test(w));
+    if((a&&n.includes(" "+a+" "))||(e&&n.includes(" "+e+" "))||words.some(w=>n.includes(" "+w+" ")||n.includes(" ال"+w+" ")))hit.push(k);}
+  return hit;
 }
-function gemJSON(t){
-  t=String(t||"").replace(/^```(?:json)?/i,"").replace(/```$/,"").trim();
-  try{return JSON.parse(t);}catch(e){}
-  const a=t.indexOf("{"),b=t.lastIndexOf("}");if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1));}catch(e){}}
-  return null;
+function classify(q){
+  const t=TOK(q),sc={};
+  for(const [id,set] of INTENTS){let s=0;for(const w of t)if(set.has(w))s++;if(s)sc[id]=s;}
+  const items=findItems(q);
+  const PRI=["design","supplier","branch","staff","loyalty","waste","order","stock","profit","costs","sales","promo","forecast","menu","help"];
+  const top=Object.entries(sc).sort((a,b)=>b[1]-a[1]||PRI.indexOf(a[0])-PRI.indexOf(b[0]));
+  return {intent:top[0]?.[0]||(items.length?"stock":null),score:top[0]?.[1]||0,items,all:sc};
 }
-const GEM_ROUTE=`
-ROUTING (overrides the Output line above). First decide the scope of the owner's latest message:
-- "store": anything about this business (stock, orders, sales, costs, suppliers, staff, marketing, branches, forecasts, design tasks, or a follow-up on your earlier replies). Answer ONLY from STATE as instructed above.
-- "general": anything else (general knowledge, religion, news, weather, prices outside the store, how-to questions). Do NOT answer it yourself: return an empty reply and no actions; a web-search step will answer.
-Output ONLY one JSON object: {"scope":"store"|"general","reply":"<your message, empty when general>","actions":[ ... ]}`;
-async function gemAsk(A,signal){
-  const turns=asstTurns().filter(m=>!m.local).map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));
-  const r1=await gemCall({system_instruction:{parts:[{text:ASST_RULES()+GEM_ROUTE+"\n\nSTATE (live):\n"+JSON.stringify(allData())}]},contents:turns,generationConfig:{responseMimeType:"application/json",temperature:0.3}},signal);
-  const j=gemJSON(r1.text);
-  if(j&&j.scope!=="general"){
-    return {content:String(j.reply||"").trim()||L("ما عندي رد واضح، جرّب صياغة ثانية.","I don't have a clear answer; try rephrasing."),actions:(Array.isArray(j.actions)?j.actions:[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:"store"};
+function storeAnswer(c,q,A){
+  const D=allData(),ar=lang==="ar",n=k=>ar?ING[k].ar:ING[k].en,inv=Object.fromEntries(D.inventory.map(x=>[x.item,x]));
+  const need=D.inventory.filter(x=>x.engineSuggestion&&x.engineSuggestion.qty>0).sort((a,b)=>a.daysCover-b.daysCover);
+  const urgent=need.filter(x=>x.engineSuggestion.orderBy<=addDays(D.today,1));
+  const P7=D.finance.last7days,PT=D.finance.today,P30=D.finance.last30days;
+  const po=list=>({type:"purchase_order",items:list.map(x=>({item:x.item,qty:x.engineSuggestion.qty})),reason:ar?"حسب نقطة إعادة الطلب ومدة التوريد والصلاحية":"From reorder point, lead time and shelf life"});
+  const tomorrow=D.forecast7d[1],todayF=D.forecast7d[0];
+  switch(c.intent){
+    case "order":{
+      const list=(c.items.length?need.filter(x=>c.items.includes(x.item)):urgent.length?urgent:need.slice(0,4));
+      if(!list.length)return {content:ar?`المخزون يغطي الطلب المتوقع، ولا يوجد صنف يحتاج طلباً الآن. الطلب المتوقع غداً ${tomorrow?.orders??"-"} طلباً.`:`Stock covers expected demand; nothing needs ordering now. Tomorrow's forecast is ${tomorrow?.orders??"-"} orders.`};
+      return {content:(ar?`الأصناف التي تحتاج طلباً: `:`Items to order: `)+list.map(x=>`${n(x.item)} ${x.engineSuggestion.qty} (${ar?"يكفي":"cover"} ${x.daysCover} ${ar?"يوم":"d"})`).join(ar?"، ":", ")+(ar?`. الطلب المتوقع غداً ${tomorrow?.orders??"-"}. هل أرسل طلب الشراء للموردين؟`:`. Tomorrow's forecast: ${tomorrow?.orders??"-"}. Shall I send the purchase order?`),actions:[po(list)]};}
+    case "stock":{
+      if(c.items.length){const out=c.items.filter(k=>inv[k]).map(k=>{const x=inv[k];return ar?`${n(k)}: ${x.stock} حصة، تكفي ${x.daysCover} يوم (الاستهلاك اليومي ${x.avgDaily})، تنتهي ${x.expiresAt||"-"}${x.onOrder?`، وفي الطريق ${x.onOrder}`:""}`:`${n(k)}: ${x.stock} portions, ${x.daysCover} days cover (daily use ${x.avgDaily}), expires ${x.expiresAt||"-"}${x.onOrder?`, ${x.onOrder} on order`:""}`;});
+        const l=need.filter(x=>c.items.includes(x.item));
+        return {content:out.join(". ")+"."+(l.length?(ar?" يحتاج طلباً. هل أرسله؟":" Needs ordering. Shall I send it?"):""),actions:l.length?[po(l)]:[]};}
+      const low=[...D.inventory].sort((a,b)=>a.daysCover-b.daysCover).slice(0,5);
+      return {content:(ar?`عندنا ${D.inventory.length} صنفاً. الأقل تغطية: `:`${D.inventory.length} items in stock. Lowest cover: `)+low.map(x=>`${n(x.item)} ${x.stock} (${x.daysCover} ${ar?"يوم":"d"})`).join(ar?"، ":", ")+(urgent.length?(ar?`. ${urgent.length} صنف يحتاج طلباً اليوم. هل أرسل الطلب؟`:`. ${urgent.length} item(s) need ordering today. Shall I send it?`):"."),actions:urgent.length?[po(urgent)]:[]};}
+    case "waste":{
+      const w=D.inventory.filter(x=>x.expectedWasteAtExpiry>0).sort((a,b)=>b.expectedWasteAtExpiry*b.costPerPortion-a.expectedWasteAtExpiry*a.costPerPortion);
+      if(!w.length)return {content:ar?"لا يوجد هدر متوقع: كل الأصناف ستُستهلك قبل انتهاء صلاحيتها.":"No waste expected: every item will be used before it expires."};
+      const cost=Math.round(w.reduce((s,x)=>s+x.expectedWasteAtExpiry*x.costPerPortion,0)),top=w[0],sig=SIGS.find(s=>Object.keys(s.q||{}).includes(top.item));
+      return {content:(ar?`الهدر المتوقع قيمته ${cost} ر.س: `:`Expected waste worth SAR ${cost}: `)+w.slice(0,4).map(x=>`${n(x.item)} ${x.expectedWasteAtExpiry} (${x.expiresAt})`).join(ar?"، ":", ")+(ar?`. أقترح عرضاً يصرّف ${n(top.item)} قبل انتهائه. هل أجدوله؟`:`. I suggest a promo to move ${n(top.item)} before it expires. Shall I schedule it?`),
+        actions:[{type:"promo",title_ar:`عرض ${ING[top.item].ar}`,title_en:`${ING[top.item].en} deal`,date:D.today,days:2,discountPercent:15,bowl:sig?.id||"all",expectedUpliftPercent:12,reason:ar?"تصريف مخزون قريب الانتهاء":"Move stock close to expiry"}]};}
+    case "sales":return {content:ar?`اليوم ${PT.orders} طلبات بمبيعات ${PT.salesInclVat} ر.س (المتوقع لليوم كاملاً ${todayF?.orders??"-"}). آخر ٧ أيام: ${P7.orders} طلباً بمبيعات ${P7.salesInclVat} ر.س ومتوسط الفاتورة ${P7.avgTicket} ر.س. آخر ٣٠ يوماً: ${P30.orders} طلباً بمبيعات ${P30.salesInclVat} ر.س.`:`Today: ${PT.orders} orders, SAR ${PT.salesInclVat} (full-day forecast ${todayF?.orders??"-"}). Last 7 days: ${P7.orders} orders, SAR ${P7.salesInclVat}, average ticket SAR ${P7.avgTicket}. Last 30 days: ${P30.orders} orders, SAR ${P30.salesInclVat}.`};
+    case "profit":return {content:ar?`آخر ٧ أيام: صافي المبيعات ${P7.netSales} ر.س، مجمل الربح ${P7.grossProfit} ر.س، وصافي الربح التشغيلي ${P7.operatingProfit} ر.س. تكلفة المواد ${P7.foodCostPct}% والهدف ${D.finance.costSettings.targetFoodCostPct}%. نقطة التعادل ${P7.breakEvenOrdersPerDay} طلباً في اليوم.`:`Last 7 days: net sales SAR ${P7.netSales}, gross profit SAR ${P7.grossProfit}, operating profit SAR ${P7.operatingProfit}. Food cost ${P7.foodCostPct}% vs target ${D.finance.costSettings.targetFoodCostPct}%. Break-even ${P7.breakEvenOrdersPerDay} orders/day.`};
+    case "costs":{
+      const parts=[[ar?"المواد":"food",P7.foodCost],[ar?"الأجور":"labor",P7.labor],[ar?"الإيجار والمصاريف الثابتة":"rent and fixed",P7.fixedCosts]].sort((a,b)=>b[1]-a[1]);
+      const low=[...D.finance.menuMargins].sort((a,b)=>a.marginPct-b.marginPct)[0],over=P7.foodCostPct>D.finance.costSettings.targetFoodCostPct;
+      return {content:(ar?`تكاليف آخر ٧ أيام: `:`Costs, last 7 days: `)+parts.map(p=>`${p[0]} ${p[1]} ${ar?"ر.س":"SAR"}`).join(ar?"، ":", ")+(ar?`. أكبر بند هو ${parts[0][0]}. ${over?`تكلفة المواد ${P7.foodCostPct}% أعلى من الهدف. `:""}أقل الأطباق هامشاً «${low.name}» بهامش ${low.marginPct}%: راجع سعره أو مكوّناته. هل أضيف مهمة للمالية؟`:`. Largest: ${parts[0][0]}. ${over?`Food cost ${P7.foodCostPct}% is above target. `:""}Lowest-margin bowl: ${low.name} at ${low.marginPct}%; review its price or recipe. Shall I add a finance task?`),
+        actions:[{type:"task",department:"finance",title:ar?`مراجعة تسعير ${low.name}`:`Review pricing of ${low.name}`,details:ar?`الهامش ${low.marginPct}%، السعر ${low.price} ر.س، تكلفة المواد ${low.foodCost} ر.س.`:`Margin ${low.marginPct}%, price SAR ${low.price}, food cost SAR ${low.foodCost}.`,due:addDays(D.today,3)}]};}
+    case "forecast":return {content:(ar?"الطلب المتوقع للأيام القادمة: ":"Forecast for the coming days: ")+D.forecast7d.slice(0,7).map(f=>`${dayLabel(f.date)} ${f.orders}${f.events?.length?" *":""}`).join(ar?"، ":", ")+(ar?". النجمة تعني يوماً فيه عرض أو حدث.":". A star marks a day with a promo or event.")};
+    case "promo":{
+      const w=Object.entries(D.averageOrdersByWeekday).sort((a,b)=>a[1]-b[1]),weak=w[0],best=w[w.length-1];
+      let d=D.today;for(let i=1;i<=7;i++){const x=addDays(D.today,i);if(dOf(x).toLocaleDateString("en-GB",{weekday:"long"})===weak[0]){d=x;break;}}
+      const top=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct)[0];
+      return {content:ar?`أضعف يوم عندنا ${dOf(d).toLocaleDateString("ar",{weekday:"long"})} بمتوسط ${weak[1]} طلباً، مقابل ${best[1]} في أقوى يوم. أقترح خصم ١٥٪ على «${top.name}» في ذلك اليوم لأنه الأعلى هامشاً (${top.marginPct}%). هل أجدول العرض؟`:`Our weakest day is ${weak[0]} (${weak[1]} orders on average vs ${best[1]} on the best day). I suggest 15% off ${top.name} that day; it has the highest margin (${top.marginPct}%). Shall I schedule it?`,
+        actions:[{type:"promo",title_ar:`خصم ١٥٪ على ${top.name}`,title_en:`15% off ${top.name}`,date:d,days:1,discountPercent:15,bowl:top.id,expectedUpliftPercent:15,reason:ar?"رفع الطلب في أضعف يوم":"Lift the weakest day"}]};}
+    case "design":{
+      const top=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct)[0];
+      return {content:ar?`جهّزت موجزاً لبوستر عن «${top.name}» يذهب لقسم التصميم كمهمة. هل أضيفها؟`:`I prepared a poster brief for ${top.name} as a design task. Shall I add it?`,
+        actions:[{type:"task",department:"design",title:ar?`بوستر عرض ${top.name}`:`Poster: ${top.name} offer`,details:ar?`المقاس ١٠٨٠×١٣٥٠. العنوان: «${top.name}» بخط Alexandria عريض. صورة الطبق من الأعلى على خلفية خضراء داكنة (#0d3b2c)، السعر ${top.price} ر.س في شارة ليمونية (#c9f26b)، والشعار أعلى اليمين.`:`Size 1080x1350. Headline: ${top.name} in bold Alexandria. Top-down bowl photo on dark green (#0d3b2c), price SAR ${top.price} in a lime badge (#c9f26b), logo top right.`,due:addDays(D.today,2)}]};}
+    case "menu":{const m=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct);return {content:(ar?"هوامش الأطباق من الأعلى: ":"Bowl margins, highest first: ")+m.map(x=>`${x.name} ${x.marginPct}% (${x.price} ${ar?"ر.س":"SAR"})`).join(ar?"، ":", ")+"."};}
+    case "staff":{const s=D.staffingNext7days;return {content:(ar?"الموظفون المطلوبون وقت الذروة: ":"Peak staff needed: ")+s.map(x=>`${dayLabel(x.date)} ${x.peakStaffNeeded}`).join(ar?"، ":", ")+(ar?`. تكلفة الأجور المتوقعة للأسبوع ${s.reduce((a,x)=>a+x.laborCost,0)} ر.س.`:`. Expected labor for the week: SAR ${s.reduce((a,x)=>a+x.laborCost,0)}.`)};}
+    case "supplier":{const s=Object.entries(D.suppliers).sort((a,b)=>a[1].onTimePct-b[1].onTimePct),worst=s[0];return {content:(ar?"أداء الموردين (الالتزام بالموعد / الجودة): ":"Suppliers (on-time / quality): ")+s.map(([k,x])=>`${supName(k)} ${x.onTimePct}% / ${x.qualityPct}%`).join(ar?"، ":", ")+(ar?`. الأضعف التزاماً ${supName(worst[0])}. طلبات الشراء المفتوحة: ${D.openPurchaseOrders.length}.`:`. Weakest on time: ${supName(worst[0])}. Open purchase orders: ${D.openPurchaseOrders.length}.`)};}
+    case "branch":{const b=[...D.branches].sort((a,b)=>b.salesPerWeek-a.salesPerWeek);return {content:(ar?"مبيعات الفروع أسبوعياً: ":"Weekly sales by branch: ")+b.map(x=>`${x.name} ${x.salesPerWeek} ${ar?"ر.س":"SAR"} (${ar?"هدر":"waste"} ${x.wastePct}%)`).join(ar?"، ":", ")+"."};}
+    case "loyalty":return {content:ar?`برنامج الولاء: كل صحن بنقطة والسادس مجاناً. الأكواد المشتركة ${D.marketing.loyalty.sharedCodes}، والطلبات التي جاءت منها ${D.marketing.loyalty.ordersFromCodes}.`:`Loyalty: one point per bowl, sixth free. Shared codes: ${D.marketing.loyalty.sharedCodes}; orders from codes: ${D.marketing.loyalty.ordersFromCodes}.`};
+    default:return {content:ar?"أجاوب من بيانات المحل عن: المخزون، ما نطلبه، المبيعات، الربح والتكاليف، التوقعات، العروض، الأطباق، الموظفين، الموردين والفروع، وأقترح إجراءات تنتظر موافقتك. وأي سؤال عام أبحث عنه في ويكيبيديا.":"I answer from store data: stock, what to order, sales, profit and costs, forecasts, promos, bowls, staff, suppliers and branches, and I propose actions for your approval. General questions are looked up on Wikipedia."};
   }
-  if(!j&&r1.text)return {content:r1.text.slice(0,900),actions:[],via:"store"};
-  const r2=await gemCall({system_instruction:{parts:[{text:"You are the general assistant inside the Khudra salad-bar console. The question is not about the store, so answer it from Google Search results. Be accurate and brief (at most ~90 words), plain sentences, no markdown symbols. If the search results do not settle it, say so. Reply in "+(lang==="ar"?"clear Modern Standard Arabic":"English")+"."}]},contents:turns.slice(-6),tools:[{google_search:{}}],generationConfig:{temperature:0.2}},signal);
-  return {content:r2.text||L("ما لقيت إجابة واضحة من البحث.","The search did not return a clear answer."),actions:[],via:"web",sources:r2.sources};
 }
-async function gemLoadModels(){
-  try{
-    const res=await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",{headers:{"x-goog-api-key":GemCfg.key()}});
-    const j=await res.json();if(!res.ok)throw new Error(j?.error?.message||res.status);
-    gemModels=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes("generateContent")&&/^models\/gemini/.test(m.name)&&!/image|tts|audio|embedding|live/.test(m.name)).map(m=>m.name.replace("models/","")).sort().reverse();
-    return {ok:true,n:gemModels.length};
-  }catch(e){return {ok:false,msg:String(e.message||e)};}
+function calc(q){
+  let e=AR_NORM(q).replace(/[×x]/g,"*").replace(/÷/g,"/").replace(/[^0-9.+\-*/() ]/g," ").replace(/\s+/g,"");
+  if(!/^[0-9.(][0-9.+\-*/()]*[0-9)]$/.test(e)||!/[+\-*/]/.test(e))return null;
+  let i=0;const num=()=>{if(e[i]==="("){i++;const v=add();i++;return v;}if(e[i]==="-"){i++;return -num();}const m=/^[0-9.]+/.exec(e.slice(i));if(!m)throw 0;i+=m[0].length;return parseFloat(m[0]);};
+  const mul=()=>{let v=num();while(e[i]==="*"||e[i]==="/"){const o=e[i++],r=num();v=o==="*"?v*r:v/r;}return v;};
+  const add=()=>{let v=mul();while(e[i]==="+"||e[i]==="-"){const o=e[i++],r=mul();v=o==="+"?v+r:v-r;}return v;};
+  try{const v=add();return i===e.length&&isFinite(v)?{expr:e,value:Math.round(v*1e6)/1e6}:null;}catch(x){return null;}
+}
+const SAME=(x,w)=>x===w||(w.length>=3&&x.length>=3&&x.slice(0,3)===w.slice(0,3));
+async function wikiAnswer(q,signal){
+  const host=(lang==="ar"||/[ء-ي]/.test(q)?"ar":"en")+".wikipedia.org",api="https://"+host+"/w/api.php?format=json&origin=*&";
+  const raw=q.replace(/[?؟!.,،]/g," ").split(/\s+/).filter(w=>w&&!STOP.has(AR_NORM(w))),qt=TOK(q);if(!qt.length)return null;
+  const grams=[];for(let n=Math.min(4,raw.length);n>=1;n--)for(let i=0;i+n<=raw.length;i++)grams.push(raw.slice(i,i+n).join(" "));
+  const [s,g]=await Promise.all([
+    fetch(api+"action=query&list=search&srlimit=4&srsearch="+encodeURIComponent(raw.join(" ")),{signal}).then(r=>r.json()),
+    fetch(api+"action=query&redirects=1&titles="+encodeURIComponent(grams.slice(0,12).join("|")),{signal}).then(r=>r.json()).catch(()=>null)]);
+  const found=(s?.query?.search||[]).map(x=>x.title);
+  const exact=Object.values(g?.query?.pages||{}).filter(p=>!("missing" in p)&&!("invalid" in p)).map(p=>p.title);
+  const titles=[...new Set([...exact,...found])];
+  const cover=t=>{const tt=TOK(t),r=found.indexOf(t);return (tt.length?qt.filter(w=>tt.some(x=>SAME(x,w))).length/qt.length-tt.filter(x=>!qt.some(w=>SAME(x,w))).length*.05:0)+(r>=0?(4-r)*.03:0);};
+  titles.sort((a,b)=>cover(b)-cover(a));
+  const top=titles.slice(0,3);if(!top.length)return null;
+  const url=t=>"https://"+host+"/wiki/"+encodeURIComponent(t.replace(/ /g,"_"));
+  const pages=await Promise.all(top.map(t=>fetch(api+"action=query&prop=extracts&explaintext=1&exsectionformat=plain&exchars=12000&redirects=1&titles="+encodeURIComponent(t),{signal}).then(r=>r.json()).then(j=>{const p=Object.values(j?.query?.pages||{})[0];return {title:p?.title||t,text:p?.extract||""};}).catch(()=>({title:t,text:""}))));
+  const cand=[];
+  pages.forEach(p=>{const tt=TOK(p.title),cv=Math.max(0,cover(p.title));
+    const wts=qt.map(w=>tt.some(x=>SAME(x,w))?{w,wt:1,inT:true}:{w,wt:2,inT:false}),tot=wts.reduce((a,x)=>a+x.wt,0);
+    p.text.split(/(?<=[.!؟?])\s+|\n+/).map(x=>x.trim()).filter(x=>x.length>25&&x.length<700).forEach((sent,si)=>{
+      const st=TOK(sent);let hit=0;for(const x of wts){if(st.some(y=>SAME(y,x.w)))hit+=x.wt;else if(x.inT)hit+=x.wt*.7;}
+      cand.push({sent,score:hit/tot+cv*.35-Math.min(si,60)*.003,p});});});
+  cand.sort((a,b)=>b.score-a.score);
+  const best=cand[0],okPages=pages.filter(p=>p.text);
+  if(!best||best.score<.6)return {content:null,sources:okPages.slice(0,2).map(p=>({title:p.title,url:url(p.title)})),intro:(okPages[0]?.text||"").split(/\n/)[0].slice(0,380)};
+  return {content:best.sent.length>420?best.sent.slice(0,420)+"…":best.sent,sources:[{title:best.p.title,url:url(best.p.title)}]};
 }
 async function askAsst(q){
   if(asstBusy)return;
-  const useGem=!!GemCfg.key();
-  const sample=useGem?null:await window.claude?.use?.("sample");
   asst.push({role:"user",content:q});
-  if(!useGem&&!sample){gemOpen=true;asst.push({role:"assistant",content:L("المساعد غير مربوط بعد. أضف مفتاح Gemini من زر «إعداد المساعد» أسفل المحادثة.","The assistant is not connected yet. Add a Gemini key from “Assistant setup” below the chat."),local:true});renderAdmin();return;}
   asstBusy=true;asstCtl=new AbortController();renderAdmin();
   const A=analyze();
   try{
-    if(useGem){
-      const r=await gemAsk(A,asstCtl.signal);
-      asst.push({role:"assistant",content:r.content,actions:r.actions,via:r.via,sources:r.sources});
+    const c=classify(q),m=calc(q);
+    if(m&&!c.score){asst.push({role:"assistant",content:`${m.expr} = ${m.value}`,via:"calc"});}
+    else if(c.intent){
+      const r=storeAnswer(c,q,A);
+      asst.push({role:"assistant",content:r.content,actions:(r.actions||[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:c.intent==="help"?null:"store"});
     }else{
-      const r=await sample.json([{role:"user",content:ASST_RULES()+"\n\nSTATE (live):\n"+JSON.stringify(allData())},...asstTurns().filter(m=>!m.local)],{cache:false,signal:asstCtl.signal});
-      const reply=String(r?.reply||"").trim()||L("ما عندي رد واضح، جرّب صياغة ثانية.","I don't have a clear answer; try rephrasing.");
-      const actions=(Array.isArray(r?.actions)?r.actions:[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3);
-      asst.push({role:"assistant",content:reply,actions,via:"store"});
+      const w=await wikiAnswer(q,asstCtl.signal);
+      if(w?.content)asst.push({role:"assistant",content:w.content,via:"web",sources:w.sources});
+      else if(w?.intro)asst.push({role:"assistant",content:L("لم أجد جملة تجيب السؤال مباشرة. أقرب ما وجدت: ","I found no sentence that answers this directly. Closest match: ")+w.intro,via:"web",sources:w.sources});
+      else asst.push({role:"assistant",local:true,content:L("لم أجد إجابة في ويكيبيديا. جرّب صياغة أقصر أو اسألني عن المحل.","Nothing found on Wikipedia. Try a shorter wording, or ask me about the store.")});
     }
   }catch(e){
-    if(e.code==="cancelled"||e.name==="AbortError"){asst.pop();}
-    else if(e.code==="invalid_json"&&e.text)asst.push({role:"assistant",content:e.text.slice(0,900),actions:[]});
-    else if(useGem)asst.push({role:"assistant",local:true,content:({400:L("الطلب مرفوض: تأكد من المفتاح واسم النموذج.","Request rejected: check the key and the model name."),401:L("المفتاح غير صحيح.","The key is not valid."),403:L("المفتاح غير مصرّح له بهذا النموذج أو بالبحث.","The key is not allowed to use this model or search."),404:L("اسم النموذج غير موجود. اختر نموذجاً آخر من الإعداد.","Model not found. Pick another one in setup."),429:L("وصلت حد الاستخدام في Gemini. جرّب بعد قليل.","Gemini usage limit reached. Try again shortly.")})[e.status]||L("تعذّر الاتصال بـ Gemini: ","Could not reach Gemini: ")+String(e.message||"").slice(0,160)});
-    else asst.push({role:"assistant",local:true,content:{not_granted:L("ما سمحت للصفحة باستخدام Claude.","You haven't allowed this page to use Claude."),rate_limited:L("وصلت حد الاستخدام. جرّب بعد شوي.","Usage limit reached. Try again later.")}[e.code]||L("ما قدرت أجاوب الحين. جرّب مرة ثانية.","Couldn't answer right now. Try again.")});
+    if(e.name==="AbortError")asst.pop();
+    else asst.push({role:"assistant",local:true,content:L("تعذّر البحث الآن (يحتاج اتصالاً بالإنترنت، ولا يعمل داخل نسخة Claude). أسئلة المحل تعمل دائماً.","Search is unavailable right now (it needs an internet connection and does not run inside the Claude copy). Store questions always work.")});
   }finally{asstBusy=false;renderAdmin();}
-}
-function gemPanel(){
-  const has=!!GemCfg.key();
-  const st=has?L("المساعد يعمل عبر Gemini","Assistant runs on Gemini")+` · <bdi dir="ltr">${esc(GemCfg.model())}</bdi>`:L("المساعد غير مربوط","Assistant not connected");
-  return `<div class="gem"><div class="gemrow"><span class="gemst ${has?'on':''}">${st}</span><button type="button" class="link" id="gToggle">${L("إعداد المساعد","Assistant setup")}</button></div>
-  ${gemOpen?`<form class="gemform" id="gForm" autocomplete="off">
-    <label>${L("مفتاح Gemini (يُحفظ في متصفحك فقط)","Gemini key (kept in your browser only)")}<input id="gKey" type="password" dir="ltr" placeholder="${has?'••••••••  '+L('محفوظ','saved'):'AIza…'}" autocomplete="off"></label>
-    <label>${L("النموذج","Model")}<input id="gModel" dir="ltr" list="gList" value="${esc(GemCfg.model())}"><datalist id="gList">${gemModels.map(m=>`<option value="${esc(m)}">`).join('')}</datalist></label>
-    <div class="gembtns"><button class="btn sm" type="submit">${L("حفظ واختبار","Save and test")}</button>${has?`<button class="link" type="button" id="gClear">${L("حذف المفتاح","Remove key")}</button>`:''}</div>
-    <small>${L("تحصل على المفتاح مجاناً من Google AI Studio. الأسئلة عن المحل تُجاب من بيانات المشروع، وغيرها من بحث Google.","Get a free key from Google AI Studio. Store questions are answered from project data; anything else from Google Search.")}</small>
-    <small id="gMsg" role="status"></small></form>`:''}</div>`;
 }
 function actionCard(a,mi,ai){
   const DEPTN={design:["التصميم","Design"],marketing:["التسويق","Marketing"],operations:["التشغيل","Operations"],finance:["المالية","Finance"],supply:["الإمداد","Supply"],hr:["الموظفين","HR"]};
@@ -2282,11 +2332,10 @@ function asstPanel(){
   const sug=[L("بكرة وش نطلب عشان ما ينقص شي؟","What should we order tomorrow so nothing runs out?"),L("الطلب وسط الأسبوع قليل، كيف نزيده؟","Mid-week orders are low. How do we lift them?"),L("وين أقدر أقلل التكاليف؟","Where can I cut costs?"),L("جهّز لي بوستر لعرض نهاية الأسبوع","Brief a poster for a weekend promo")];
   const vis=asst.map((m,i)=>({m,i})).filter(x=>!x.m.hidden);
   return `<section class="panel ai asst">
-    <div class="ph2"><div><h2>${L("مساعد خُضرة","Khudra assistant")}</h2><p class="muted">${L("مستشارك في كل الأقسام: الإمداد، المالية، التسويق، التشغيل، التصميم. اسأله أي شي، وهو يقترح ويستأذنك قبل ما ينفّذ.","Your adviser across every department: supply, finance, marketing, operations, design. Ask anything; it proposes, and asks before it acts.")}</p></div></div>
-    <ul class="chatlog" id="cLog">${vis.length?vis.map(({m,i})=>`<li class="${m.role==="user"?"me":"bot"}">${m.via?`<span class="via v-${m.via}">${m.via==="web"?L("من بحث Google","From Google Search"):L("من بيانات المحل","From store data")}</span>`:''}${esc(m.content)}${(m.sources||[]).length?`<span class="srcs">${m.sources.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)}</a>`).join('')}</span>`:''}${(m.actions||[]).map((a,ai)=>actionCard(a,i,ai)).join('')}</li>`).join(''):`<li class="bot">${L("هلا! أنا شايف المخزون والمبيعات والتكاليف والموظفين لحظة بلحظة. وش تبي نبدأ فيه؟","Hi! I can see stock, sales, costs and staffing live. Where do you want to start?")}</li>`}${asstBusy?`<li class="bot thinking">${L("يراجع بيانات المحل…","Checking the store's data…")}</li>`:''}</ul>
+    <div class="ph2"><div><h2>${L("مساعد خُضرة","Khudra assistant")}</h2><p class="muted">${L("مساعد مبني داخل المشروع بدون أي نموذج خارجي: يجاوب من بيانات المحل ويقترح ويستأذنك قبل ما ينفّذ، والأسئلة العامة يبحث عنها في ويكيبيديا.","Built into the project with no external AI model: answers from store data, proposes actions and asks before acting; general questions are looked up on Wikipedia.")}</p></div></div>
+    <ul class="chatlog" id="cLog">${vis.length?vis.map(({m,i})=>`<li class="${m.role==="user"?"me":"bot"}">${m.via?`<span class="via v-${m.via}">${m.via==="web"?L("من ويكيبيديا","From Wikipedia"):m.via==="calc"?L("حساب","Calculation"):L("من بيانات المحل","From store data")}</span>`:''}${esc(m.content)}${(m.sources||[]).length?`<span class="srcs">${m.sources.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)}</a>`).join('')}</span>`:''}${(m.actions||[]).map((a,ai)=>actionCard(a,i,ai)).join('')}</li>`).join(''):`<li class="bot">${L("هلا! أنا شايف المخزون والمبيعات والتكاليف والموظفين لحظة بلحظة. وش تبي نبدأ فيه؟","Hi! I can see stock, sales, costs and staffing live. Where do you want to start?")}</li>`}${asstBusy?`<li class="bot thinking">${L("يراجع بيانات المحل…","Checking the store's data…")}</li>`:''}</ul>
     <div class="qsug">${sug.map(q=>`<button type="button" class="qs">${q}</button>`).join('')}</div>
     <form class="chatform" id="cForm"><input id="cQ" maxlength="400" placeholder="${L("اكتب سؤالك أو طلبك…","Type a question or a request…")}" aria-label="message" autocomplete="off"><button class="btn sm" type="submit" ${asstBusy?'disabled':''}>${L("أرسل","Send")}</button>${asstBusy?`<button class="link" type="button" id="cStop">${L("إيقاف","Stop")}</button>`:''}</form>
-    ${gemPanel()}
   </section>`;
 }
 function tasksBlock(){
@@ -2316,13 +2365,6 @@ function renderAdmin(){
   $('cQ').value=draft;if(hadFocus)$('cQ').focus();const cl=$('cLog');cl.scrollTop=cl.scrollHeight;
   $('cForm').onsubmit=e=>{e.preventDefault();const q=$('cQ').value.trim();if(!q||asstBusy)return;$('cQ').value='';askAsst(q);};
   if($('cStop'))$('cStop').onclick=()=>asstCtl?.abort();
-  if($('gToggle'))$('gToggle').onclick=()=>{gemOpen=!gemOpen;renderAdmin();};
-  if($('gClear'))$('gClear').onclick=()=>{GemCfg.set("key","");gemModels=[];renderAdmin();};
-  if($('gForm'))$('gForm').onsubmit=async e=>{e.preventDefault();const k=$('gKey').value.trim(),m=$('gModel').value.trim();if(k)GemCfg.set("key",k);GemCfg.set("model",m&&m!==GEM_DEFAULT?m:"");
-    if(!GemCfg.key()){$('gMsg').textContent=L("أدخل المفتاح أولاً.","Enter the key first.");return;}
-    $('gMsg').textContent=L("جارٍ الاختبار…","Testing…");const r=await gemLoadModels();
-    if(r.ok){gemOpen=false;renderAdmin();toast(L("تم ربط المساعد بـ Gemini.","Assistant connected to Gemini."));}
-    else if($('gMsg'))$('gMsg').textContent=L("فشل الاختبار: ","Test failed: ")+r.msg.slice(0,140);};
   body.querySelectorAll('.qs').forEach(b=>b.onclick=()=>askAsst(b.textContent));
   body.querySelectorAll('[data-ax]').forEach(b=>b.onclick=()=>{const [mi,ai,v]=b.dataset.ax.split(':');execAction(+mi,+ai,v==='yes');});
   if(keep){const el=body.querySelector('#'+CSS.escape(keep))||body.querySelector(`[data-fin="${keep}"]`);el?.focus?.();}
