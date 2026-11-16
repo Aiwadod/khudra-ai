@@ -1,0 +1,202 @@
+{
+  "dataset": {
+    "rows": 8535,
+    "items": 15,
+    "open_days": 569,
+    "test_days": 168,
+    "start": "2021-02-04",
+    "end": "2022-09-30"
+  },
+  "accuracy": [
+    {
+      "model": "naive",
+      "MAE": 12.52,
+      "WAPE": 35.21,
+      "bias": -0.12
+    },
+    {
+      "model": "seasonal_naive",
+      "MAE": 13.04,
+      "WAPE": 36.66,
+      "bias": -0.66
+    },
+    {
+      "model": "moving_avg_7",
+      "MAE": 12.35,
+      "WAPE": 34.72,
+      "bias": -0.16
+    },
+    {
+      "model": "khudra_heuristic",
+      "MAE": 16.32,
+      "WAPE": 45.88,
+      "bias": -12.01
+    },
+    {
+      "model": "lgbm",
+      "MAE": 8.16,
+      "WAPE": 22.93,
+      "bias": -4.47
+    }
+  ],
+  "per_item": [
+    {
+      "item": "BAGUETTE",
+      "khudra_heuristic": 34.0,
+      "lgbm": 23.0,
+      "improvement_pct": 32.4
+    },
+    {
+      "item": "BANETTE",
+      "khudra_heuristic": 41.6,
+      "lgbm": 23.6,
+      "improvement_pct": 43.3
+    },
+    {
+      "item": "BOULE 400G",
+      "khudra_heuristic": 44.3,
+      "lgbm": 34.6,
+      "improvement_pct": 21.9
+    },
+    {
+      "item": "CAMPAGNE",
+      "khudra_heuristic": 43.9,
+      "lgbm": 29.8,
+      "improvement_pct": 32.1
+    },
+    {
+      "item": "CEREAL BAGUETTE",
+      "khudra_heuristic": 49.5,
+      "lgbm": 30.1,
+      "improvement_pct": 39.2
+    },
+    {
+      "item": "COMPLET",
+      "khudra_heuristic": 35.1,
+      "lgbm": 21.8,
+      "improvement_pct": 37.9
+    },
+    {
+      "item": "COOKIE",
+      "khudra_heuristic": 62.0,
+      "lgbm": 45.4,
+      "improvement_pct": 26.8
+    },
+    {
+      "item": "CROISSANT",
+      "khudra_heuristic": 49.6,
+      "lgbm": 24.9,
+      "improvement_pct": 49.8
+    },
+    {
+      "item": "ECLAIR",
+      "khudra_heuristic": 57.2,
+      "lgbm": 55.3,
+      "improvement_pct": 3.3
+    },
+    {
+      "item": "FORMULE SANDWICH",
+      "khudra_heuristic": 39.8,
+      "lgbm": 38.7,
+      "improvement_pct": 2.8
+    },
+    {
+      "item": "PAIN AU CHOCOLAT",
+      "khudra_heuristic": 47.2,
+      "lgbm": 26.1,
+      "improvement_pct": 44.7
+    },
+    {
+      "item": "SPECIAL BREAD",
+      "khudra_heuristic": 35.5,
+      "lgbm": 22.5,
+      "improvement_pct": 36.6
+    },
+    {
+      "item": "TARTELETTE",
+      "khudra_heuristic": 54.6,
+      "lgbm": 50.8,
+      "improvement_pct": 7.0
+    },
+    {
+      "item": "TRADITIONAL BAGUETTE",
+      "khudra_heuristic": 46.7,
+      "lgbm": 17.0,
+      "improvement_pct": 63.6
+    },
+    {
+      "item": "VIK BREAD",
+      "khudra_heuristic": 63.9,
+      "lgbm": 37.2,
+      "improvement_pct": 41.8
+    }
+  ],
+  "quantile_coverage_pct": {
+    "q50": 55.5,
+    "q65": 65.0,
+    "q80": 76.2,
+    "q90": 85.5
+  },
+  "critical_ratio": 0.65,
+  "food_cost_assumption": 0.35,
+  "newsvendor": [
+    {
+      "policy": "seasonal_naive",
+      "profit_eur": 54531.9,
+      "waste_pct": 18.1,
+      "lost_sales_pct": 18.7,
+      "stockout_days_pct": 45.8,
+      "vs_heuristic_pct": 12.4
+    },
+    {
+      "policy": "heuristic",
+      "profit_eur": 48504.7,
+      "waste_pct": 19.4,
+      "lost_sales_pct": 28.6,
+      "stockout_days_pct": 49.5,
+      "vs_heuristic_pct": 0.0
+    },
+    {
+      "policy": "heuristic + safety stock",
+      "profit_eur": 51658.5,
+      "waste_pct": 26.4,
+      "lost_sales_pct": 17.5,
+      "stockout_days_pct": 31.9,
+      "vs_heuristic_pct": 6.5
+    },
+    {
+      "policy": "lgbm point forecast",
+      "profit_eur": 62361.9,
+      "waste_pct": 10.3,
+      "lost_sales_pct": 13.1,
+      "stockout_days_pct": 37.1,
+      "vs_heuristic_pct": 28.6
+    },
+    {
+      "policy": "lgbm quantile @ critical ratio",
+      "profit_eur": 63018.4,
+      "waste_pct": 14.2,
+      "lost_sales_pct": 9.3,
+      "stockout_days_pct": 28.3,
+      "vs_heuristic_pct": 29.9
+    },
+    {
+      "policy": "perfect foresight",
+      "profit_eur": 77597.2,
+      "waste_pct": 0.0,
+      "lost_sales_pct": 0.0,
+      "stockout_days_pct": 0.0,
+      "vs_heuristic_pct": 60.0
+    }
+  ],
+  "top_features": {
+    "shop_total_lag1": 9.2,
+    "shop_total_roll7": 6.6,
+    "trend": 6.4,
+    "same_dow_mean4": 6.1,
+    "same_dow_med8": 5.6,
+    "lag_1": 5.5,
+    "weekofyear": 5.4,
+    "roll7_mean": 5.1
+  }
+}
