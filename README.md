@@ -1,11 +1,11 @@
-# Khudra — demand forecasting and a built-in operations assistant for perishable-food retail
+# Khudra — demand forecasting and an operations agent for perishable-food retail
 
 Khudra is a working salad-bar system (customer ordering, kitchen display, management console) built around two AI components:
 
 1. **Demand forecasting + inventory optimisation** for perishable items — a LightGBM model backtested on real point-of-sale data, with a newsvendor ordering policy.
-2. **A built-in assistant with human-in-the-loop control** — written from scratch inside the project, with no external AI model or API key. It routes each question by intent, answers store questions from the live state, *proposes* typed actions (purchase orders, promotions, tasks) that only run after validation and explicit approval, and answers general questions by retrieval from Wikipedia.
+2. **An operations agent with human-in-the-loop control** — one assistant that answers and analyses store questions from the live state, *proposes* typed actions (purchase orders, promotions, tasks) that only run after validation and explicit approval, and answers general questions too. It has two modes: a language-model agent (Gemini, with the owner's own API key) and a built-in rule-based engine that needs nothing.
 
-**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The assistant works for every visitor with nothing to set up.
+**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The assistant starts in basic mode; add a Gemini API key under “Smart agent setup” (kept in your browser only) to turn on the language-model agent.
 
 ![results](reports/figures/results.png)
 
@@ -40,28 +40,28 @@ Unsold fresh food is thrown away, so the right quantity is not the mean forecast
 
 The quantile policy earns about 30% more than the heuristic and closes roughly half the gap to perfect foresight. Its edge over the plain point forecast is small (+1 point); most of the gain comes from forecasting better, not from the quantile step.
 
-## The assistant
+## The agent
 
 ```mermaid
 flowchart LR
-  U[Owner asks in chat] --> N[Normalise Arabic/English, stem, drop stop-words]
-  N --> R{Intent router}
-  R -- store intent --> S[Answer from live store state]
-  R -- arithmetic --> K[Local calculator]
-  R -- anything else --> W[Wikipedia retrieval: find pages, rank sentences]
+  U[Owner asks in chat] --> K{Gemini key set?}
+  K -- yes --> R[LLM router: rules + live STATE as JSON]
+  R -- store --> S[Grounded answer + proposed actions]
+  R -- general --> W[Second LLM call with Google Search]
+  K -- no --> B[Built-in engine: intent keywords, store answers, Wikipedia retrieval]
   S --> G[Guardrails: schema check, clamp, spoilage cap, date window]
+  B --> G
   G --> C[Action card: Approve / No]
-  C -- approve --> X[Execute: purchase order, promo, task]
+  C -- approve --> X[Execute: purchase order, promo, task, settings]
   X --> L[Audit log + state update]
 ```
 
-- **No external model:** the assistant is plain code in `app/index.html`. No LLM, no API key, nothing sent to an AI provider.
-- **Intent router:** 15 intents (stock, ordering, waste, sales, profit, costs, forecast, promotions, design, menu, staff, suppliers, branches, loyalty, help) matched on normalised, stemmed Arabic and English keywords, plus ingredient-name detection.
-- **Grounded answers:** store answers are computed from the same state the dashboards use (stock cover, reorder suggestions, P&L, margins, staffing), so every number is traceable.
-- **General questions:** the question is searched on Wikipedia (Arabic or English), candidate pages are ranked by how well their titles cover the question, and the best-matching sentence is returned with a source link. This is retrieval, not reasoning: it works for plain encyclopedic questions and can miss or return a loosely related sentence.
-- **Guardrails in code:** quantities are rounded to pack size and capped at what can be used before the item spoils; discounts are clamped to 5–50%; dates must fall in the next 60 days; unknown items and action types are dropped.
+- **Smart agent (Gemini):** each message first goes through a routing call that receives the rules and the full live store state. Store questions are answered there, with reasoning over the data (comparisons, what-if estimates, causes) and optional proposed actions. Anything else goes to a second call with Google Search grounding, with source links shown; if search is unavailable it falls back to the model's own knowledge and says so with a label.
+- **Key handling:** the owner pastes their own Gemini key in the app; it is stored in that browser only and sent only to Google's API. It is never in this repository.
+- **Basic mode (no key):** a rule-based engine in plain code: 15 intents matched on normalised, stemmed Arabic and English keywords, answers computed from the same state as the dashboards, a local calculator, and sentence retrieval from Wikipedia for general questions. It is limited and repeats itself; it exists so the demo works with no setup.
+- **Guardrails in code, not in the prompt:** quantities are rounded to pack size and capped at what can be used before the item spoils; discounts are clamped to 5–50%; dates must fall in the next 60 days; unknown items and action types are dropped. Both modes pass through the same guardrails.
 - **Human in the loop:** nothing executes without Approve; every executed action is logged.
-- `tests/agent_flow.test.js` checks routing on 20 labelled questions (20/20; these are the questions the router was tuned on, not a held-out set), the guardrails on adversarial actions, and the propose → approve → effect loop (11 assertions, passing).
+- `tests/agent_flow.test.js` checks basic-mode routing on 20 labelled questions (20/20; these are the questions the router was tuned on, not a held-out set), the guardrails on adversarial actions, and the propose → approve → effect loop (11 assertions, passing).
 
 ## What is real and what is not
 
@@ -69,9 +69,9 @@ flowchart LR
 |---|---|
 | Forecast model, backtest, newsvendor simulation | Real data, run, numbers above |
 | Assistant routing, guardrails, approval flow | Implemented and tested (see above) |
-| Assistant on unseen phrasings | **Not measured.** Routing is keyword-based; wording outside its vocabulary falls through to Wikipedia search |
-| General-knowledge answers | Retrieval from Wikipedia, spot-checked by hand on a few questions; no accuracy figure |
-| `agent_eval/` | Left over from an earlier LLM-based version of the assistant; not used by the current app |
+| Smart agent (Gemini) | Request flow, routing, action handling and error handling tested against a mocked API. **Answer quality with a live key is not measured yet** |
+| Basic mode | Keyword-based; wording outside its vocabulary falls through to Wikipedia retrieval, which is hit-and-miss |
+| `agent_eval/` | Scenarios and a grading harness from an earlier version; needs adapting to the Gemini path before it can produce a score |
 | Store data inside the app (orders, stock, branches, costs) | Synthetic examples |
 | Forecast inside the app | Still the simple rule; the trained model is not wired in (it needs the store's own history) |
 | Sending orders to suppliers | Simulated |
@@ -90,7 +90,7 @@ npm i playwright && npx playwright install chromium
 node tests/agent_flow.test.js    # assistant routing, guardrails and approval loop
 ```
 
-The assistant needs no setup. General questions need an internet connection (they query Wikipedia); store questions work offline.
+Basic mode needs no setup. For the smart agent, get a free key from Google AI Studio and paste it under “Smart agent setup”.
 
 ## Layout
 
@@ -104,7 +104,7 @@ app/          index.html  (customer · kitchen · management console, Arabic/Eng
 
 ## Next steps
 
-1. Measure the router on a held-out set of real owner questions, and replace keyword matching with a small trained intent classifier.
+1. Run the agent evaluation against the Gemini path and report a score per scenario.
 2. Add weather and school-holiday features; test a longer horizon (2–3 days of lead time).
 3. Wire the trained model into the app's forecast once a store has ~8 weeks of its own data.
 
@@ -119,6 +119,6 @@ app/          index.html  (customer · kitchen · management console, Arabic/Eng
 «خُضرة» نظام تشغيل لمحل سلطات فيه مكوّنان من الذكاء الاصطناعي:
 
 - **نموذج توقع الطلب:** مدرّب ومختبر على بيانات مبيعات حقيقية، وخفّض خطأ التوقع إلى النصف مقارنة بالمعادلة البسيطة، ورفع الربح في المحاكاة نحو ٣٠٪.
-- **مساعد مبني داخل المشروع بموافقة بشرية:** بدون أي نموذج خارجي. يصنّف السؤال، يجاوب أسئلة المحل من بياناته، ويقترح إجراءات لا تُنفّذ إلا بعد التحقق منها وموافقة المدير، ويجاوب الأسئلة العامة بالبحث في ويكيبيديا.
+- **وكيل ذكي بموافقة بشرية:** يجاوب ويحلّل أسئلة المحل من بياناته، ويقترح إجراءات لا تُنفّذ إلا بعد التحقق منها وموافقة المدير، ويجاوب الأسئلة العامة. يعمل بنموذج لغوي (جيمناي بمفتاح صاحب المحل)، وبدونه يعمل بوضع أساسي محدود.
 
-بيانات المحل داخل التطبيق أمثلة، ودقة المساعد على أسئلة لم يُضبط عليها لم تُقَس بعد.
+بيانات المحل داخل التطبيق أمثلة، وجودة إجابات الوكيل بمفتاح حقيقي لم تُقَس بعد.
