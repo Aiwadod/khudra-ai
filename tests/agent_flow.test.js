@@ -1,4 +1,4 @@
-// End-to-end check of the built-in assistant (no external model, no API key):
+// End-to-end check of the assistant in basic mode (no key set, so no external model is called):
 // intent routing on a labelled question set -> guardrails on adversarial actions -> nothing happens until Approve -> effects land in the store.
 // Run: npm i playwright && npx playwright install chromium && node tests/agent_flow.test.js
 const { chromium } = require('playwright');
@@ -48,7 +48,7 @@ const LABELLED = [
   s = await p.evaluate(() => ({ pos: Object.values(Store.all('purchases')).filter(x => x.by === 'ai').length, log: (Store.all('agent').log.entries || []).length }));
   assert.ok(s.pos >= 1, 'approved purchase order is created');
   assert.ok(s.log >= 1, 'the executed action is written to the audit log');
-  assert.deepStrictEqual(external, [], 'no request goes to any external AI model');
+  assert.deepStrictEqual(external, [], 'with no key set, no request goes to any external AI model');
   assert.deepStrictEqual(errors, []);
   console.log('assistant flow: 11 checks passed');
   await b.close();
