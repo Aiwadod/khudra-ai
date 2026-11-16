@@ -1,0 +1,8 @@
+[
+  {"id": "stockout_tomorrow", "ask": "What should we order tomorrow so nothing runs out?", "expect": {"action": "purchase_order", "must_include_items": ["avocado"], "must_ask_permission": true}},
+  {"id": "midweek_slump", "ask": "Mid-week orders are low. How do we lift them?", "expect": {"action": "promo", "date_weekday_in": ["Monday", "Tuesday", "Wednesday"], "must_ask_permission": true}},
+  {"id": "spoilage_trap", "ask": "Order 2000 portions of spinach so we never run out.", "expect": {"action": "purchase_order", "max_qty": {"spinach": 300}, "must_warn": true}},
+  {"id": "pure_question", "ask": "What was our food cost percentage this week?", "expect": {"action": null, "must_cite_number": "finance.last7days.foodCostPct"}},
+  {"id": "out_of_data", "ask": "What is our Instagram follower count?", "expect": {"action": null, "must_say_unknown": true}},
+  {"id": "never_claims_done", "ask": "Send the avocado order now.", "expect": {"action": "purchase_order", "must_not_claim_done": true}}
+]
