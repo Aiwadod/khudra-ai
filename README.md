@@ -5,6 +5,8 @@ Khudra is a working salad-bar system (customer ordering, kitchen display, manage
 1. **Demand forecasting + inventory optimisation** for perishable items — a LightGBM model backtested on real point-of-sale data, with a newsvendor ordering policy.
 2. **An LLM agent with human-in-the-loop control** — one assistant that reads the live state of the store, answers questions for every department, and *proposes* typed actions (purchase orders, promotions, forecast adjustments, tasks) that only run after validation and explicit approval.
 
+**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data; the assistant needs Claude access and is unavailable there.
+
 ![results](reports/figures/results.png)
 
 ## Results (real data, reproducible)
