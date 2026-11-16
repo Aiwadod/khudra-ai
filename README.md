@@ -5,7 +5,7 @@ Khudra is a working salad-bar system (customer ordering, kitchen display, manage
 1. **Demand forecasting + inventory optimisation** for perishable items — a LightGBM model backtested on real point-of-sale data, with a newsvendor ordering policy.
 2. **An LLM agent with human-in-the-loop control** — one assistant that reads the live state of the store, answers questions for every department, and *proposes* typed actions (purchase orders, promotions, forecast adjustments, tasks) that only run after validation and explicit approval.
 
-**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data; the assistant needs Claude access and is unavailable there.
+**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The assistant works there once you add your own Gemini API key under “Assistant setup” (the key stays in your browser).
 
 ![results](reports/figures/results.png)
 
@@ -85,7 +85,9 @@ npm i playwright && npx playwright install chromium
 node tests/agent_flow.test.js    # agent loop test
 ```
 
-The assistant itself answers only when the app runs as a Claude artifact (it uses the viewer's Claude access); opened as a plain file, everything else works and the assistant says it is unavailable.
+The assistant is provider-independent. In the standalone app it calls the Gemini API directly from the browser with a key the owner enters under “Assistant setup” (stored in that browser only, never in this repo). Each message goes through a router step: questions about the business are answered from the live store state and may carry proposed actions; anything else is answered by a second call grounded with Google Search, with source links shown. When the page runs as a Claude artifact and no key is set, it falls back to the viewer's Claude access.
+
+Not yet measured: the Gemini path was tested against a mocked API (routing, action validation, error handling); answer quality with a live key has not been evaluated.
 
 ## Layout
 
