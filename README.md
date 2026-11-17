@@ -1,11 +1,38 @@
-# Khudra — demand forecasting and an operations agent for perishable-food retail
+# Khudra — demand forecasting and an LLM operations agent for perishable-food retail
 
-Khudra is a working salad-bar system (customer ordering, kitchen display, management console) built around two AI components:
+![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
+![LightGBM](https://img.shields.io/badge/LightGBM-quantile%20regression-2f6f4f)
+![pandas](https://img.shields.io/badge/pandas-time%20series-150458?logo=pandas&logoColor=white)
+![Gemini](https://img.shields.io/badge/LLM-Gemini%20API-4285F4?logo=googlegemini&logoColor=white)
+![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 
-1. **Demand forecasting + inventory optimisation** for perishable items — a LightGBM model backtested on real point-of-sale data, with a newsvendor ordering policy.
-2. **An operations agent with human-in-the-loop control** — one assistant that answers and analyses store questions from the live state, *proposes* typed actions (purchase orders, promotions, tasks) that only run after validation and explicit approval, and answers general questions too. It has two modes: a language-model agent (Gemini, with the owner's own API key) and a built-in rule-based engine that needs nothing.
+**Live demo:** https://aiwadod.github.io/khudra-ai/app/ (Arabic/English · customer, kitchen and management screens · the agent is in the management screen)
 
-**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The smart agent runs for every visitor through a small server proxy (`agent-proxy/worker.js`) that holds the Gemini key; if the proxy is unreachable the assistant falls back to basic mode and says so.
+## At a glance
+
+| | |
+|---|---|
+| **Problem** | A salad bar throws away unsold fresh food and runs out of popular items. How much should it order each day? |
+| **ML (Python)** | LightGBM demand forecast trained and backtested on 234k real point-of-sale records |
+| **Result** | Forecast error (WAPE) **45.9% → 22.9%** against the original rule; **34% lower** than the best simple baseline |
+| **Decision** | Quantile forecast + newsvendor policy turns the forecast into an order quantity: **+30% simulated profit** |
+| **LLM agent** | One assistant grounded in live store data; proposes typed actions that run only after code guardrails and human approval |
+| **Serving** | Streaming proxy on Cloudflare Workers keeps the API key secret and races two models for speed |
+
+## Where the AI is
+
+| component | technique | language | files |
+|---|---|---|---|
+| Feature engineering | 7 lags, rolling means and spread, same-weekday medians, calendar features, shop-level totals; everything shifted so nothing leaks from the future | Python | `ml/features.py` |
+| Forecasting model | LightGBM point (L1) and quantile models | Python | `ml/backtest.py` |
+| Evaluation | rolling-origin backtest, refit every 28 days, MAE / WAPE / bias, quantile calibration | Python | `ml/backtest.py`, `reports/results.json` |
+| Ordering decision | newsvendor critical ratio, profit / waste / stock-out simulation | Python | `ml/backtest.py` |
+| Data pipeline | download, clean, aggregate 234k receipt lines to daily demand | Python | `ml/data.py` |
+| LLM agent | grounding in live state, `[S]`/`[G]` routing, typed action schema, streamed replies | JavaScript | `app/index.html` |
+| Guardrails + approval | schema check, pack rounding, spoilage cap, discount and date clamps, audit log | JavaScript | `app/index.html` |
+| Model serving | key-holding proxy, origin and rate limits, two-model race, SSE streaming | JavaScript | `agent-proxy/worker.js` |
+| Agent evaluation (planned) | scenario set and grader | Python | `agent_eval/` |
+| Tests | routing, guardrails, propose → approve → effect | JavaScript | `tests/agent_flow.test.js` |
 
 ![results](reports/figures/results.png)
 
@@ -105,7 +132,7 @@ Then set `AGENT_URL` in `app/index.html` to the Worker's URL and add your site t
 ## Layout
 
 ```
-ml/           data.py · features.py · backtest.py
+ml/           data.py · features.py · backtest.py   (Python: data, features, model, backtest)
 reports/      results.json · predictions.csv · figures/
 agent_eval/   scenarios.json · run_eval.py · system_prompt.txt
 tests/        agent_flow.test.js
@@ -127,9 +154,10 @@ app/          index.html  (customer · kitchen · management console, Arabic/Eng
 
 ## بالعربي
 
-«خُضرة» نظام تشغيل لمحل سلطات فيه مكوّنان من الذكاء الاصطناعي:
+«خُضرة» نظام تشغيل لمحل سلطات (واجهة الزبون والمطبخ والإدارة) فيه مكوّنان من الذكاء الاصطناعي:
 
 - **نموذج توقع الطلب:** مدرّب ومختبر على بيانات مبيعات حقيقية، وخفّض خطأ التوقع إلى النصف مقارنة بالمعادلة البسيطة، ورفع الربح في المحاكاة نحو ٣٠٪.
-- **وكيل ذكي بموافقة بشرية:** يجاوب ويحلّل أسئلة المحل من بياناته، ويقترح إجراءات لا تُنفّذ إلا بعد التحقق منها وموافقة المدير، ويجاوب الأسئلة العامة. يعمل بنموذج لغوي (جيمناي بمفتاح صاحب المحل)، وبدونه يعمل بوضع أساسي محدود.
+- **نموذج توقع الطلب (بايثون):** مكتوب في مجلد ml.
+- **وكيل ذكي بموافقة بشرية:** يعمل بنموذج لغوي (جيمناي) لكل زائر عبر خادم وسيط يحفظ المفتاح سراً. يجاوب ويحلّل أسئلة المحل من بياناته، ويقترح إجراءات لا تُنفّذ إلا بعد التحقق منها وموافقة المدير، ويجاوب الأسئلة العامة. وإذا تعطل الخادم يعمل بوضع أساسي محدود.
 
-بيانات المحل داخل التطبيق أمثلة، وجودة إجابات الوكيل بمفتاح حقيقي لم تُقَس بعد.
+بيانات المحل داخل التطبيق أمثلة، وجودة إجابات الوكيل لم تُقَس بشكل منهجي بعد.
