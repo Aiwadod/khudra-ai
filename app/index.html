@@ -2077,7 +2077,7 @@ function allData(){
   return {...snapshotForAI(A),
     averageOrdersByWeekday:Object.fromEntries(Object.entries(dow).map(([d,a])=>[d,Math.round(a.reduce((x,y)=>x+y,0)/a.length)])),
     finance:{today:compactPeriod(1),last7days:compactPeriod(7),last30days:compactPeriod(30),costSettings:{rentPerDay:f.rentPerDay,utilitiesPerDay:f.utilitiesPerDay,otherPerDay:f.otherPerDay,packagingCost:f.packagingCost,staffPerShift:f.staffPerShift,staffHourly:f.staffHourly,targetFoodCostPct:f.targetFoodCostPct},
-      menuMargins:bowlEconomics().map(b=>({id:b.id,name:SIGS.find(s=>s.id===b.id).en,price:b.price,foodCost:r1(b.food),marginPct:Math.round(b.marginPct*100)}))},
+      menuMargins:bowlEconomics().map(b=>({id:b.id,name:SIGS.find(s=>s.id===b.id).en,name_ar:SIGS.find(s=>s.id===b.id).ar,ingredients_ar:SIGS.find(s=>s.id===b.id).dar,priceInclVat:b.price,foodCost:r1(b.food),marginPct:Math.round(b.marginPct*100)}))},
     suppliers:Object.fromEntries(Object.entries(Store.all("suppliers")).map(([k,s])=>[k,{name:s.name_en,leadDays:s.leadDays,onTimePct:s.onTimePct,qualityPct:s.qualityPct,terms:s.terms_en}])),
     marketing:{ingredientPortionsSold7d:pop,loyalty:{sharedCodes:Object.keys(Store.all("shares")).length,ordersFromCodes:Object.values(uses).reduce((a,v)=>a+v,0)},
       scheduledPromos:Object.values(Store.all("events")).filter(e=>e.type==="promo"&&e.date>=t).map(e=>({date:e.date,label:e.label_en,discount:e.discount||0,bowl:e.bowl||null}))},
@@ -2148,8 +2148,14 @@ const GemCfg={
 };
 let gemOpen=false,gemModels=[],gemLastModel="";
 const agentOn=()=>!!(GemCfg.key()||AGENT_URL);
-async function gemCall(body,signal){
-  const own=GemCfg.key();
+async function gemCall(body,signal0){
+  const own=GemCfg.key(),tc=new AbortController(),tm=setTimeout(()=>tc.abort(),75000);
+  signal0?.addEventListener("abort",()=>tc.abort());const signal=tc.signal;
+  try{return await gemCall0(body,signal,own);}
+  catch(e){if(e.name==="AbortError"&&!signal0?.aborted){const err=new Error("timeout");err.status=504;throw err;}throw e;}
+  finally{clearTimeout(tm);}
+}
+async function gemCall0(body,signal,own){
   const res=own
     ?await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":generateContent",{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":own},body:JSON.stringify(body)})
     :await fetch(AGENT_URL,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -2264,7 +2270,7 @@ function storeAnswer(c,q,A){
       const parts=[[ar?"المواد":"food",P7.foodCost],[ar?"الأجور":"labor",P7.labor],[ar?"الإيجار والمصاريف الثابتة":"rent and fixed",P7.fixedCosts]].sort((a,b)=>b[1]-a[1]);
       const low=[...D.finance.menuMargins].sort((a,b)=>a.marginPct-b.marginPct)[0],over=P7.foodCostPct>D.finance.costSettings.targetFoodCostPct;
       return {content:(ar?`تكاليف آخر ٧ أيام: `:`Costs, last 7 days: `)+parts.map(p=>`${p[0]} ${p[1]} ${ar?"ر.س":"SAR"}`).join(ar?"، ":", ")+(ar?`. أكبر بند هو ${parts[0][0]}. ${over?`تكلفة المواد ${P7.foodCostPct}% أعلى من الهدف. `:""}أقل الأطباق هامشاً «${low.name}» بهامش ${low.marginPct}%: راجع سعره أو مكوّناته. هل أضيف مهمة للمالية؟`:`. Largest: ${parts[0][0]}. ${over?`Food cost ${P7.foodCostPct}% is above target. `:""}Lowest-margin bowl: ${low.name} at ${low.marginPct}%; review its price or recipe. Shall I add a finance task?`),
-        actions:[{type:"task",department:"finance",title:ar?`مراجعة تسعير ${low.name}`:`Review pricing of ${low.name}`,details:ar?`الهامش ${low.marginPct}%، السعر ${low.price} ر.س، تكلفة المواد ${low.foodCost} ر.س.`:`Margin ${low.marginPct}%, price SAR ${low.price}, food cost SAR ${low.foodCost}.`,due:addDays(D.today,3)}]};}
+        actions:[{type:"task",department:"finance",title:ar?`مراجعة تسعير ${low.name}`:`Review pricing of ${low.name}`,details:ar?`الهامش ${low.marginPct}%، السعر ${low.priceInclVat} ر.س، تكلفة المواد ${low.foodCost} ر.س.`:`Margin ${low.marginPct}%, price SAR ${low.priceInclVat}, food cost SAR ${low.foodCost}.`,due:addDays(D.today,3)}]};}
     case "forecast":return {content:(ar?"الطلب المتوقع للأيام القادمة: ":"Forecast for the coming days: ")+D.forecast7d.slice(0,7).map(f=>`${dayLabel(f.date)} ${f.orders}${f.events?.length?" *":""}`).join(ar?"، ":", ")+(ar?". النجمة تعني يوماً فيه عرض أو حدث.":". A star marks a day with a promo or event.")};
     case "promo":{
       const w=Object.entries(D.averageOrdersByWeekday).sort((a,b)=>a[1]-b[1]),weak=w[0],best=w[w.length-1];
@@ -2275,8 +2281,8 @@ function storeAnswer(c,q,A){
     case "design":{
       const top=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct)[0];
       return {content:ar?`جهّزت موجزاً لبوستر عن «${top.name}» يذهب لقسم التصميم كمهمة. هل أضيفها؟`:`I prepared a poster brief for ${top.name} as a design task. Shall I add it?`,
-        actions:[{type:"task",department:"design",title:ar?`بوستر عرض ${top.name}`:`Poster: ${top.name} offer`,details:ar?`المقاس ١٠٨٠×١٣٥٠. العنوان: «${top.name}» بخط Alexandria عريض. صورة الطبق من الأعلى على خلفية خضراء داكنة (#0d3b2c)، السعر ${top.price} ر.س في شارة ليمونية (#c9f26b)، والشعار أعلى اليمين.`:`Size 1080x1350. Headline: ${top.name} in bold Alexandria. Top-down bowl photo on dark green (#0d3b2c), price SAR ${top.price} in a lime badge (#c9f26b), logo top right.`,due:addDays(D.today,2)}]};}
-    case "menu":{const m=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct);return {content:(ar?"هوامش الأطباق من الأعلى: ":"Bowl margins, highest first: ")+m.map(x=>`${x.name} ${x.marginPct}% (${x.price} ${ar?"ر.س":"SAR"})`).join(ar?"، ":", ")+"."};}
+        actions:[{type:"task",department:"design",title:ar?`بوستر عرض ${top.name}`:`Poster: ${top.name} offer`,details:ar?`المقاس ١٠٨٠×١٣٥٠. العنوان: «${top.name}» بخط Alexandria عريض. صورة الطبق من الأعلى على خلفية خضراء داكنة (#0d3b2c)، السعر ${top.priceInclVat} ر.س في شارة ليمونية (#c9f26b)، والشعار أعلى اليمين.`:`Size 1080x1350. Headline: ${top.name} in bold Alexandria. Top-down bowl photo on dark green (#0d3b2c), price SAR ${top.priceInclVat} in a lime badge (#c9f26b), logo top right.`,due:addDays(D.today,2)}]};}
+    case "menu":{const m=[...D.finance.menuMargins].sort((a,b)=>b.marginPct-a.marginPct);return {content:(ar?"هوامش الأطباق من الأعلى: ":"Bowl margins, highest first: ")+m.map(x=>`${x.name} ${x.marginPct}% (${x.priceInclVat} ${ar?"ر.س":"SAR"})`).join(ar?"، ":", ")+"."};}
     case "staff":{const s=D.staffingNext7days;return {content:(ar?"الموظفون المطلوبون وقت الذروة: ":"Peak staff needed: ")+s.map(x=>`${dayLabel(x.date)} ${x.peakStaffNeeded}`).join(ar?"، ":", ")+(ar?`. تكلفة الأجور المتوقعة للأسبوع ${s.reduce((a,x)=>a+x.laborCost,0)} ر.س.`:`. Expected labor for the week: SAR ${s.reduce((a,x)=>a+x.laborCost,0)}.`)};}
     case "supplier":{const s=Object.entries(D.suppliers).sort((a,b)=>a[1].onTimePct-b[1].onTimePct),worst=s[0];return {content:(ar?"أداء الموردين (الالتزام بالموعد / الجودة): ":"Suppliers (on-time / quality): ")+s.map(([k,x])=>`${supName(k)} ${x.onTimePct}% / ${x.qualityPct}%`).join(ar?"، ":", ")+(ar?`. الأضعف التزاماً ${supName(worst[0])}. طلبات الشراء المفتوحة: ${D.openPurchaseOrders.length}.`:`. Weakest on time: ${supName(worst[0])}. Open purchase orders: ${D.openPurchaseOrders.length}.`)};}
     case "branch":{const b=[...D.branches].sort((a,b)=>b.salesPerWeek-a.salesPerWeek);return {content:(ar?"مبيعات الفروع أسبوعياً: ":"Weekly sales by branch: ")+b.map(x=>`${x.name} ${x.salesPerWeek} ${ar?"ر.س":"SAR"} (${ar?"هدر":"waste"} ${x.wastePct}%)`).join(ar?"، ":", ")+"."};}
@@ -2344,7 +2350,7 @@ async function askAsst(q){
       try{r=await gemAsk(A,sig);}
       catch(e){
         if(e.name==="AbortError")throw e;
-        note=({401:L("مفتاح Gemini غير صحيح.","The Gemini key is not valid."),403:L("الوكيل الذكي رفض الطلب.","The smart agent refused the request."),429:L("الوكيل الذكي مشغول أو وصل حد الاستخدام.","The smart agent is busy or at its usage limit."),503:L("الوكيل الذكي لم يُجهَّز بعد.","The smart agent is not set up yet.")})[e.status]||L("الوكيل الذكي غير متاح الآن.","The smart agent is unavailable right now.");
+        note=({504:L("الوكيل الذكي تأخر في الرد.","The smart agent took too long."),401:L("مفتاح Gemini غير صحيح.","The Gemini key is not valid."),403:L("الوكيل الذكي رفض الطلب.","The smart agent refused the request."),429:L("الوكيل الذكي مشغول أو وصل حد الاستخدام.","The smart agent is busy or at its usage limit."),503:L("الوكيل الذكي لم يُجهَّز بعد.","The smart agent is not set up yet.")})[e.status]||L("الوكيل الذكي غير متاح الآن.","The smart agent is unavailable right now.");
       }
     }
     if(!r){r=await builtinReply(q,A,sig);if(note)r.content=note+" "+L("هذه إجابة الوضع الأساسي:","Basic-mode answer:")+"\n"+r.content;}
