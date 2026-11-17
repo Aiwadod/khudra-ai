@@ -84,9 +84,9 @@ flowchart LR
 ```
 
 - **Smart agent (Gemini):** one streamed call per message. The model receives the rules and the full live store state, tags its reply `[S]` (about the store) or `[G]` (anything else), and the text appears word by word as it is generated. Store answers reason over the data (comparisons, what-if estimates, causes); general answers come from the model's own knowledge and are labelled that way. Proposed actions follow an `<<ACTIONS>>` marker as a JSON array, which the page hides and turns into approval cards.
-- **Key handling:** the Gemini key lives only as a secret in a Cloudflare Worker (`agent-proxy/worker.js`). The browser sends the request to the Worker, which adds the key and forwards it to Google. The Worker only serves the site's own origin, caps output tokens, allows no tool except Google Search, and limits each IP to about 12 requests a minute. These limits stop casual misuse, not a determined attacker, so the key has no billing attached.
+- **Key handling:** the Gemini key lives only as a secret in a Cloudflare Worker (`agent-proxy/worker.js`). The browser sends the request to the Worker, which adds the key and forwards it to Google. The Worker only serves the site's own origin, caps output tokens, passes no tools, and limits each IP to about 12 requests a minute. These limits stop casual misuse, not a determined attacker, so the key has no billing attached.
 - **Free-tier reality:** on a free key the Flash models allow about 20 requests a day and Flash-Lite about 500, and Google Search grounding is not included for the newer models. Free-tier latency is also very uneven (2 to 30 seconds for the same prompt), so the Worker sends each request to two Flash-Lite models at once (each has its own quota) and streams back whichever answers first, cancelling the other; if both fail it tries a second pair. Measured live after this change: six questions finished in 1.2 to 5.1 seconds, with first words usually within about a second. Answers come without live search. Heavier use or a stronger model needs a paid key.
-- **Basic mode (no key):** a rule-based engine in plain code: 15 intents matched on normalised, stemmed Arabic and English keywords, answers computed from the same state as the dashboards, a local calculator, and sentence retrieval from Wikipedia for general questions. It is limited and repeats itself; it exists so the demo works with no setup.
+- **Basic mode (fallback):** a rule-based engine in plain code: 15 intents matched on normalised, stemmed Arabic and English keywords, answers computed from the same state as the dashboards, a local calculator, and sentence retrieval from Wikipedia for general questions. It is limited and repeats itself; it exists so the demo works with no setup.
 - **Guardrails in code, not in the prompt:** quantities are rounded to pack size and capped at what can be used before the item spoils; discounts are clamped to 5–50%; dates must fall in the next 60 days; unknown items and action types are dropped. Both modes pass through the same guardrails.
 - **Human in the loop:** nothing executes without Approve; every executed action is logged.
 - `tests/agent_flow.test.js` checks basic-mode routing on 20 labelled questions (20/20; these are the questions the router was tuned on, not a held-out set), the guardrails on adversarial actions, and the propose → approve → effect loop (11 assertions, passing).
@@ -118,7 +118,7 @@ npm i playwright && npx playwright install chromium
 node tests/agent_flow.test.js    # assistant routing, guardrails and approval loop
 ```
 
-Basic mode needs no setup. To run your own copy of the smart agent:
+To run your own copy of the smart agent:
 
 ```bash
 npm i -g wrangler
@@ -156,8 +156,7 @@ app/          index.html  (customer · kitchen · management console, Arabic/Eng
 
 «خُضرة» نظام تشغيل لمحل سلطات (واجهة الزبون والمطبخ والإدارة) فيه مكوّنان من الذكاء الاصطناعي:
 
-- **نموذج توقع الطلب:** مدرّب ومختبر على بيانات مبيعات حقيقية، وخفّض خطأ التوقع إلى النصف مقارنة بالمعادلة البسيطة، ورفع الربح في المحاكاة نحو ٣٠٪.
-- **نموذج توقع الطلب (بايثون):** مكتوب في مجلد ml.
+- **نموذج توقع الطلب (بايثون، مجلد ml):** مدرّب ومختبر على بيانات مبيعات حقيقية، وخفّض خطأ التوقع إلى النصف مقارنة بالمعادلة البسيطة، ورفع الربح في المحاكاة نحو ٣٠٪.
 - **وكيل ذكي بموافقة بشرية:** يعمل بنموذج لغوي (جيمناي) لكل زائر عبر خادم وسيط يحفظ المفتاح سراً. يجاوب ويحلّل أسئلة المحل من بياناته، ويقترح إجراءات لا تُنفّذ إلا بعد التحقق منها وموافقة المدير، ويجاوب الأسئلة العامة. وإذا تعطل الخادم يعمل بوضع أساسي محدود.
 
 بيانات المحل داخل التطبيق أمثلة، وجودة إجابات الوكيل لم تُقَس بشكل منهجي بعد.
