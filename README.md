@@ -45,9 +45,9 @@ The quantile policy earns about 30% more than the heuristic and closes roughly h
 ```mermaid
 flowchart LR
   U[Owner asks in chat] --> K{Agent proxy reachable?}
-  K -- yes --> R[Worker adds key -> LLM router: rules + live STATE as JSON]
-  R -- store --> S[Grounded answer + proposed actions]
-  R -- general --> W[Second LLM call with Google Search]
+  K -- yes --> R[Worker adds key -> one streamed LLM call: rules + live STATE]
+  R -- "[S]" --> S[Grounded answer + proposed actions]
+  R -- "[G]" --> W[General answer from the model]
   K -- no --> B[Built-in engine: intent keywords, store answers, Wikipedia retrieval]
   S --> G[Guardrails: schema check, clamp, spoilage cap, date window]
   B --> G
@@ -56,7 +56,7 @@ flowchart LR
   X --> L[Audit log + state update]
 ```
 
-- **Smart agent (Gemini):** each message first goes through a routing call that receives the rules and the full live store state. Store questions are answered there, with reasoning over the data (comparisons, what-if estimates, causes) and optional proposed actions. Anything else goes to a second call that asks for Google Search grounding; when search is not available the model answers from its own knowledge and the reply is labelled that way.
+- **Smart agent (Gemini):** one streamed call per message. The model receives the rules and the full live store state, tags its reply `[S]` (about the store) or `[G]` (anything else), and the text appears word by word as it is generated. Store answers reason over the data (comparisons, what-if estimates, causes); general answers come from the model's own knowledge and are labelled that way. Proposed actions follow an `<<ACTIONS>>` marker as a JSON array, which the page hides and turns into approval cards.
 - **Key handling:** the Gemini key lives only as a secret in a Cloudflare Worker (`agent-proxy/worker.js`). The browser sends the request to the Worker, which adds the key and forwards it to Google. The Worker only serves the site's own origin, caps output tokens, allows no tool except Google Search, and limits each IP to about 12 requests a minute. These limits stop casual misuse, not a determined attacker, so the key has no billing attached.
 - **Free-tier reality:** on a free key the Flash models allow about 20 requests a day and Flash-Lite about 500, and Google Search grounding is not included for the newer models. The Worker therefore tries models in order (Flash, then Flash-Lite variants) and drops the search tool when Google refuses it, so most answers come from Flash-Lite without live search. Each store question costs one request and each general question two. Heavier use needs a paid key.
 - **Basic mode (no key):** a rule-based engine in plain code: 15 intents matched on normalised, stemmed Arabic and English keywords, answers computed from the same state as the dashboards, a local calculator, and sentence retrieval from Wikipedia for general questions. It is limited and repeats itself; it exists so the demo works with no setup.
