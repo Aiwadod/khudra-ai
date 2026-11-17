@@ -6,6 +6,7 @@
 // and Google Search grounding is not included for the newer models. So the Worker tries
 // models in order (Flash-Lite first: it has the larger free quota and answers fastest) and falls back on 429/503/404/timeouts, and drops the search tool if Google
 // refuses it. The header X-Model says which model answered, X-Search says if search ran.
+// With {"stream": true} the reply is streamed back as server-sent events (streamGenerateContent).
 //
 // Limits (best effort, not a security boundary against a determined attacker):
 // - only requests from the allowed origins are served (browsers send Origin; scripts can fake it)
@@ -19,7 +20,7 @@ const CHAIN = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-li
 const MAX_BODY_BYTES = 300000;
 const MAX_OUTPUT_TOKENS = 4096;
 const PER_MINUTE = 12;
-const ATTEMPT_MS = 25000;
+const ATTEMPT_MS = 20000; // time allowed until the model starts answering
 const hits = new Map();
 
 export default {
@@ -60,6 +61,7 @@ export default {
       generationConfig: { ...(b.generationConfig || {}), maxOutputTokens: MAX_OUTPUT_TOKENS },
     };
     if (b.system_instruction) body.system_instruction = b.system_instruction;
+    const stream = b.stream === true;
     let search = Array.isArray(b.tools) && b.tools.length > 0 && b.tools.every(t => t && Object.keys(t).length === 1 && "google_search" in t);
 
     const order = CHAIN.includes(b.model) ? [b.model, ...CHAIN.filter(m => m !== b.model)] : CHAIN;
@@ -68,18 +70,22 @@ export default {
       for (let pass = 0; pass < 2; pass++) {
         const payload = search ? { ...body, tools: [{ google_search: {} }] } : body;
         let r;
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), ATTEMPT_MS);
         try {
-          r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(ATTEMPT_MS),
+            signal: ctl.signal,
           });
         } catch (e) {
           last = JSON.stringify({ error: { message: "Model timed out" } }); lastModel = model;
           break;
+        } finally {
+          clearTimeout(timer);
         }
-        if (r.ok) return new Response(r.body, { status: 200, headers: { ...cors, "Content-Type": "application/json", "X-Model": model, "X-Search": search ? "on" : "off" } });
+        if (r.ok) return new Response(r.body, { status: 200, headers: { ...cors, "Content-Type": stream ? "text/event-stream" : "application/json", "Cache-Control": "no-cache", "X-Model": model, "X-Search": search ? "on" : "off" } });
         last = await r.text(); lastModel = model;
         if (search && (r.status === 429 || r.status === 400 || r.status === 403)) { search = false; continue; }
         if (![429, 503, 500, 404].includes(r.status)) return new Response(last, { status: r.status, headers: { ...cors, "Content-Type": "application/json", "X-Model": model } });
