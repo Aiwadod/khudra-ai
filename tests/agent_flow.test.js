@@ -1,4 +1,4 @@
-// End-to-end check of the assistant in basic mode (no key set, so no external model is called):
+// End-to-end check of the assistant in basic mode (the agent proxy is blocked here, so the app must fall back):
 // intent routing on a labelled question set -> guardrails on adversarial actions -> nothing happens until Approve -> effects land in the store.
 // Run: npm i playwright && npx playwright install chromium && node tests/agent_flow.test.js
 const { chromium } = require('playwright');
@@ -15,6 +15,7 @@ const LABELLED = [
   const b = await chromium.launch(); const p = await b.newPage();
   const errors = []; p.on('pageerror', e => errors.push(e.message));
   const external = []; p.on('request', r => { if (/generativelanguage|anthropic|openai/.test(r.url())) external.push(r.url()); });
+  await p.route(/workers\.dev/, r => r.abort());
   await p.goto('file://' + path.resolve(__dirname, '../app/index.html'));
   await p.waitForTimeout(900);
   await p.evaluate(() => (location.hash = 'admin')); await p.waitForTimeout(600);
@@ -48,7 +49,7 @@ const LABELLED = [
   s = await p.evaluate(() => ({ pos: Object.values(Store.all('purchases')).filter(x => x.by === 'ai').length, log: (Store.all('agent').log.entries || []).length }));
   assert.ok(s.pos >= 1, 'approved purchase order is created');
   assert.ok(s.log >= 1, 'the executed action is written to the audit log');
-  assert.deepStrictEqual(external, [], 'with no key set, no request goes to any external AI model');
+  assert.deepStrictEqual(external, [], 'with the proxy down, no request goes directly to any AI provider');
   assert.deepStrictEqual(errors, []);
   console.log('assistant flow: 11 checks passed');
   await b.close();
