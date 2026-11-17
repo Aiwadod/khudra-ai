@@ -2190,7 +2190,7 @@ async function gemAsk(A,signal){
   if(!j&&r1.text)return {content:r1.text.slice(0,900),actions:[],via:"store"};
   const sys={parts:[{text:"You are a capable general assistant inside the Khudra salad-bar console. This question is not about the store. Answer it directly, correctly and helpfully, whatever the topic; reason step by step internally and give the conclusion with a short explanation. Use Google Search results when the question depends on facts or anything recent. Keep it brief (at most ~120 words), plain sentences, no markdown symbols. If you are not sure, say so. Reply in "+(lang==="ar"?"clear Modern Standard Arabic":"English")+"."}]};
   let r2;
-  try{r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),tools:[{google_search:{}}],generationConfig:{temperature:0.4}},signal);}
+  try{r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),...(GemCfg.key()?{tools:[{google_search:{}}]}:{}),generationConfig:{temperature:0.4}},signal);}
   catch(e){if(e.name==="AbortError"||e.status===401||e.status===429||!GemCfg.key())throw e;r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),generationConfig:{temperature:0.4}},signal);}
   return {content:r2.text||L("لم أصل إلى إجابة واضحة.","I could not reach a clear answer."),actions:[],via:r2.sources.length?"web":"model",sources:r2.sources};
 }
