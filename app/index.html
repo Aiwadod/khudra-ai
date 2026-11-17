@@ -2138,15 +2138,22 @@ function normAction(a,A){
 /* ---------- language-model agent (Gemini, owner's own key): routes each question to store data or to general knowledge + search.
    Without a key the built-in engine below answers instead. ---------- */
 const GEM_DEFAULT="gemini-3.8-flash";
+/* Shared agent for every visitor: a Cloudflare Worker that holds the Gemini key (see agent-proxy/worker.js). Empty = not deployed yet. */
+const AGENT_URL="https://khudra-agent.ai-wadod.workers.dev/";
 const GemCfg={
   mem:{},
   get(k){try{const v=localStorage.getItem("khudra.gem."+k);if(v!=null)return v;}catch(e){}return this.mem[k]||"";},
   set(k,v){this.mem[k]=v;try{v?localStorage.setItem("khudra.gem."+k,v):localStorage.removeItem("khudra.gem."+k);}catch(e){}},
   key(){return this.get("key");},model(){return this.get("model")||GEM_DEFAULT;}
 };
-let gemOpen=false,gemModels=[];
+let gemOpen=false,gemModels=[],gemLastModel="";
+const agentOn=()=>!!(GemCfg.key()||AGENT_URL);
 async function gemCall(body,signal){
-  const res=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":generateContent",{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":GemCfg.key()},body:JSON.stringify(body)});
+  const own=GemCfg.key();
+  const res=own
+    ?await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":generateContent",{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":own},body:JSON.stringify(body)})
+    :await fetch(AGENT_URL,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!own&&res.headers.get("X-Model"))gemLastModel=res.headers.get("X-Model");
   let j=null;try{j=await res.json();}catch(e){}
   if(!res.ok){const err=new Error(j?.error?.message||("HTTP "+res.status));err.status=res.status;throw err;}
   const c=j?.candidates?.[0];
@@ -2178,7 +2185,7 @@ async function gemAsk(A,signal){
   const sys={parts:[{text:"You are a capable general assistant inside the Khudra salad-bar console. This question is not about the store. Answer it directly, correctly and helpfully, whatever the topic; reason step by step internally and give the conclusion with a short explanation. Use Google Search results when the question depends on facts or anything recent. Keep it brief (at most ~120 words), plain sentences, no markdown symbols. If you are not sure, say so. Reply in "+(lang==="ar"?"clear Modern Standard Arabic":"English")+"."}]};
   let r2;
   try{r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),tools:[{google_search:{}}],generationConfig:{temperature:0.4}},signal);}
-  catch(e){if(e.name==="AbortError"||e.status===401||e.status===429)throw e;r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),generationConfig:{temperature:0.4}},signal);}
+  catch(e){if(e.name==="AbortError"||e.status===401||e.status===429||!GemCfg.key())throw e;r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),generationConfig:{temperature:0.4}},signal);}
   return {content:r2.text||L("لم أصل إلى إجابة واضحة.","I could not reach a clear answer."),actions:[],via:r2.sources.length?"web":"model",sources:r2.sources};
 }
 async function gemLoadModels(){
@@ -2312,32 +2319,44 @@ async function wikiAnswer(q,signal){
   if(!best||best.score<.6)return {content:null,sources:okPages.slice(0,2).map(p=>({title:p.title,url:url(p.title)})),intro:(okPages[0]?.text||"").split(/\n/)[0].slice(0,380)};
   return {content:best.sent.length>420?best.sent.slice(0,420)+"…":best.sent,sources:[{title:best.p.title,url:url(best.p.title)}]};
 }
+async function builtinReply(q,A,signal){
+  const c=classify(q),m=calc(q);
+  if(m&&!c.score)return {content:`${m.expr} = ${m.value}`,via:"calc"};
+  if(c.intent){const r=storeAnswer(c,q,A);return {content:r.content,actions:(r.actions||[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:c.intent==="help"?null:"store"};}
+  try{
+    const w=await wikiAnswer(q,signal);
+    if(w?.content)return {content:w.content,via:"web",sources:w.sources};
+    if(w?.intro)return {content:L("لم أجد جملة تجيب السؤال مباشرة. أقرب ما وجدت: ","I found no sentence that answers this directly. Closest match: ")+w.intro,via:"web",sources:w.sources};
+    return {local:true,content:L("لم أجد إجابة في ويكيبيديا. جرّب صياغة أقصر أو اسألني عن المحل.","Nothing found on Wikipedia. Try a shorter wording, or ask me about the store.")};
+  }catch(e){
+    if(e.name==="AbortError")throw e;
+    return {local:true,content:L("تعذّر البحث الآن (يحتاج اتصالاً بالإنترنت، ولا يعمل داخل نسخة Claude). أسئلة المحل تعمل دائماً.","Search is unavailable right now (it needs an internet connection and does not run inside the Claude copy). Store questions always work.")};
+  }
+}
 async function askAsst(q){
   if(asstBusy)return;
   asst.push({role:"user",content:q});
   asstBusy=true;asstCtl=new AbortController();renderAdmin();
-  const A=analyze();
+  const A=analyze(),sig=asstCtl.signal;
   try{
-    const c=classify(q),m=calc(q);
-    if(GemCfg.key()){const r=await gemAsk(A,asstCtl.signal);asst.push({role:"assistant",content:r.content,actions:r.actions,via:r.via,sources:r.sources});}
-    else if(m&&!c.score){asst.push({role:"assistant",content:`${m.expr} = ${m.value}`,via:"calc"});}
-    else if(c.intent){
-      const r=storeAnswer(c,q,A);
-      asst.push({role:"assistant",content:r.content,actions:(r.actions||[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:c.intent==="help"?null:"store"});
-    }else{
-      const w=await wikiAnswer(q,asstCtl.signal);
-      if(w?.content)asst.push({role:"assistant",content:w.content,via:"web",sources:w.sources});
-      else if(w?.intro)asst.push({role:"assistant",content:L("لم أجد جملة تجيب السؤال مباشرة. أقرب ما وجدت: ","I found no sentence that answers this directly. Closest match: ")+w.intro,via:"web",sources:w.sources});
-      else asst.push({role:"assistant",local:true,content:L("لم أجد إجابة في ويكيبيديا. جرّب صياغة أقصر أو اسألني عن المحل.","Nothing found on Wikipedia. Try a shorter wording, or ask me about the store.")});
+    let r=null,note="";
+    if(agentOn()){
+      try{r=await gemAsk(A,sig);}
+      catch(e){
+        if(e.name==="AbortError")throw e;
+        note=({401:L("مفتاح Gemini غير صحيح.","The Gemini key is not valid."),403:L("الوكيل الذكي رفض الطلب.","The smart agent refused the request."),429:L("الوكيل الذكي مشغول أو وصل حد الاستخدام.","The smart agent is busy or at its usage limit."),503:L("الوكيل الذكي لم يُجهَّز بعد.","The smart agent is not set up yet.")})[e.status]||L("الوكيل الذكي غير متاح الآن.","The smart agent is unavailable right now.");
+      }
     }
+    if(!r){r=await builtinReply(q,A,sig);if(note)r.content=note+" "+L("هذه إجابة الوضع الأساسي:","Basic-mode answer:")+"\n"+r.content;}
+    asst.push({role:"assistant",...r});
   }catch(e){
     if(e.name==="AbortError")asst.pop();
-    else if(GemCfg.key())asst.push({role:"assistant",local:true,content:({400:L("الطلب مرفوض: تأكد من المفتاح واسم النموذج.","Request rejected: check the key and the model name."),401:L("المفتاح غير صحيح.","The key is not valid."),403:L("المفتاح غير مصرّح له بهذا النموذج.","The key is not allowed to use this model."),404:L("اسم النموذج غير موجود. اختر نموذجاً آخر من الإعداد.","Model not found. Pick another one in setup."),429:L("وصلت حد الاستخدام في Gemini. جرّب بعد قليل.","Gemini usage limit reached. Try again shortly.")})[e.status]||L("تعذّر الاتصال بـ Gemini: ","Could not reach Gemini: ")+String(e.message||"").slice(0,160)});
-    else asst.push({role:"assistant",local:true,content:L("تعذّر البحث الآن (يحتاج اتصالاً بالإنترنت، ولا يعمل داخل نسخة Claude). أسئلة المحل تعمل دائماً.","Search is unavailable right now (it needs an internet connection and does not run inside the Claude copy). Store questions always work.")});
+    else asst.push({role:"assistant",local:true,content:L("ما قدرت أجاوب الحين. جرّب مرة ثانية.","Couldn't answer right now. Try again.")});
   }finally{asstBusy=false;renderAdmin();}
 }
 function gemPanel(){
   const has=!!GemCfg.key();
+  if(AGENT_URL&&!has)return `<div class="gem"><div class="gemrow"><span class="gemst on">${L("الوكيل الذكي يعمل لكل الزوار","Smart agent on for every visitor")}${gemLastModel?` · <bdi dir="ltr">${esc(gemLastModel)}</bdi>`:''}</span></div></div>`;
   const st=has?L("الوكيل الذكي يعمل","Smart agent on")+` · <bdi dir="ltr">${esc(GemCfg.model())}</bdi>`:L("الوضع الأساسي: إجابات محدودة. فعّل الوكيل الذكي ليجاوب أي سؤال.","Basic mode: limited answers. Turn on the smart agent to answer anything.");
   return `<div class="gem"><div class="gemrow"><span class="gemst ${has?'on':''}">${st}</span><button type="button" class="link" id="gToggle">${L("إعداد الوكيل الذكي","Smart agent setup")}</button></div>
   ${gemOpen?`<form class="gemform" id="gForm" autocomplete="off">
