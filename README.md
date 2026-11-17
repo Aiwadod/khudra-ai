@@ -5,7 +5,7 @@ Khudra is a working salad-bar system (customer ordering, kitchen display, manage
 1. **Demand forecasting + inventory optimisation** for perishable items — a LightGBM model backtested on real point-of-sale data, with a newsvendor ordering policy.
 2. **An operations agent with human-in-the-loop control** — one assistant that answers and analyses store questions from the live state, *proposes* typed actions (purchase orders, promotions, tasks) that only run after validation and explicit approval, and answers general questions too. It has two modes: a language-model agent (Gemini, with the owner's own API key) and a built-in rule-based engine that needs nothing.
 
-**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The assistant starts in basic mode; add a Gemini API key under “Smart agent setup” (kept in your browser only) to turn on the language-model agent.
+**Live demo:** https://aiwadod.github.io/khudra-ai/app/ — runs in local demo mode with synthetic store data. The smart agent runs for every visitor through a small server proxy (`agent-proxy/worker.js`) that holds the Gemini key; if the proxy is unreachable the assistant falls back to basic mode and says so.
 
 ![results](reports/figures/results.png)
 
@@ -44,8 +44,8 @@ The quantile policy earns about 30% more than the heuristic and closes roughly h
 
 ```mermaid
 flowchart LR
-  U[Owner asks in chat] --> K{Gemini key set?}
-  K -- yes --> R[LLM router: rules + live STATE as JSON]
+  U[Owner asks in chat] --> K{Agent proxy reachable?}
+  K -- yes --> R[Worker adds key -> LLM router: rules + live STATE as JSON]
   R -- store --> S[Grounded answer + proposed actions]
   R -- general --> W[Second LLM call with Google Search]
   K -- no --> B[Built-in engine: intent keywords, store answers, Wikipedia retrieval]
@@ -56,8 +56,9 @@ flowchart LR
   X --> L[Audit log + state update]
 ```
 
-- **Smart agent (Gemini):** each message first goes through a routing call that receives the rules and the full live store state. Store questions are answered there, with reasoning over the data (comparisons, what-if estimates, causes) and optional proposed actions. Anything else goes to a second call with Google Search grounding, with source links shown; if search is unavailable it falls back to the model's own knowledge and says so with a label.
-- **Key handling:** the owner pastes their own Gemini key in the app; it is stored in that browser only and sent only to Google's API. It is never in this repository.
+- **Smart agent (Gemini):** each message first goes through a routing call that receives the rules and the full live store state. Store questions are answered there, with reasoning over the data (comparisons, what-if estimates, causes) and optional proposed actions. Anything else goes to a second call that asks for Google Search grounding; when search is not available the model answers from its own knowledge and the reply is labelled that way.
+- **Key handling:** the Gemini key lives only as a secret in a Cloudflare Worker (`agent-proxy/worker.js`). The browser sends the request to the Worker, which adds the key and forwards it to Google. The Worker only serves the site's own origin, caps output tokens, allows no tool except Google Search, and limits each IP to about 12 requests a minute. These limits stop casual misuse, not a determined attacker, so the key has no billing attached.
+- **Free-tier reality:** on a free key the Flash models allow about 20 requests a day and Flash-Lite about 500, and Google Search grounding is not included for the newer models. The Worker therefore tries models in order (Flash, then Flash-Lite variants) and drops the search tool when Google refuses it, so most answers come from Flash-Lite without live search. Each store question costs one request and each general question two. Heavier use needs a paid key.
 - **Basic mode (no key):** a rule-based engine in plain code: 15 intents matched on normalised, stemmed Arabic and English keywords, answers computed from the same state as the dashboards, a local calculator, and sentence retrieval from Wikipedia for general questions. It is limited and repeats itself; it exists so the demo works with no setup.
 - **Guardrails in code, not in the prompt:** quantities are rounded to pack size and capped at what can be used before the item spoils; discounts are clamped to 5–50%; dates must fall in the next 60 days; unknown items and action types are dropped. Both modes pass through the same guardrails.
 - **Human in the loop:** nothing executes without Approve; every executed action is logged.
@@ -69,7 +70,7 @@ flowchart LR
 |---|---|
 | Forecast model, backtest, newsvendor simulation | Real data, run, numbers above |
 | Assistant routing, guardrails, approval flow | Implemented and tested (see above) |
-| Smart agent (Gemini) | Request flow, routing, action handling and error handling tested against a mocked API. **Answer quality with a live key is not measured yet** |
+| Smart agent (Gemini) | Deployed and answering live through the Worker. Routing, action handling and fallbacks tested against a mocked API. **Answer quality is not measured yet** |
 | Basic mode | Keyword-based; wording outside its vocabulary falls through to Wikipedia retrieval, which is hit-and-miss |
 | `agent_eval/` | Scenarios and a grading harness from an earlier version; needs adapting to the Gemini path before it can produce a score |
 | Store data inside the app (orders, stock, branches, costs) | Synthetic examples |
@@ -90,7 +91,16 @@ npm i playwright && npx playwright install chromium
 node tests/agent_flow.test.js    # assistant routing, guardrails and approval loop
 ```
 
-Basic mode needs no setup. For the smart agent, get a free key from Google AI Studio and paste it under “Smart agent setup”.
+Basic mode needs no setup. To run your own copy of the smart agent:
+
+```bash
+npm i -g wrangler
+cd agent-proxy
+wrangler deploy worker.js --name khudra-agent --compatibility-date 2026-11-01
+wrangler secret put GEMINI_API_KEY --name khudra-agent   # paste a key from Google AI Studio
+```
+
+Then set `AGENT_URL` in `app/index.html` to the Worker's URL and add your site to `ALLOWED_ORIGINS` in `worker.js`.
 
 ## Layout
 
@@ -99,6 +109,7 @@ ml/           data.py · features.py · backtest.py
 reports/      results.json · predictions.csv · figures/
 agent_eval/   scenarios.json · run_eval.py · system_prompt.txt
 tests/        agent_flow.test.js
+agent-proxy/  worker.js  (Cloudflare Worker that holds the Gemini key)
 app/          index.html  (customer · kitchen · management console, Arabic/English)
 ```
 
