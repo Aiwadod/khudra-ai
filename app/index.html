@@ -2166,7 +2166,7 @@ function splitStream(t){
   return {tag,reply:reply.trim(),actions:actions.trim()};
 }
 async function gemStream(body,signal0,onText){
-  const own=GemCfg.key(),tc=new AbortController();let tm=setTimeout(()=>tc.abort(),30000);
+  const own=GemCfg.key(),tc=new AbortController();let tm=setTimeout(()=>tc.abort(),35000);
   signal0?.addEventListener("abort",()=>tc.abort());
   try{
     const res=own
