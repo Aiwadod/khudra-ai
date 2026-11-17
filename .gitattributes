@@ -1,0 +1,3 @@
+# The app is a single bundled HTML file (images embedded); keep it out of the language stats
+app/index.html linguist-vendored
+reports/** linguist-generated
