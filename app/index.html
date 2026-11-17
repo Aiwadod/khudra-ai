@@ -2148,51 +2148,55 @@ const GemCfg={
 };
 let gemOpen=false,gemModels=[],gemLastModel="";
 const agentOn=()=>!!(GemCfg.key()||AGENT_URL);
-async function gemCall(body,signal0){
-  const own=GemCfg.key(),tc=new AbortController(),tm=setTimeout(()=>tc.abort(),75000);
-  signal0?.addEventListener("abort",()=>tc.abort());const signal=tc.signal;
-  try{return await gemCall0(body,signal,own);}
-  catch(e){if(e.name==="AbortError"&&!signal0?.aborted){const err=new Error("timeout");err.status=504;throw err;}throw e;}
+/* ---------- streaming, one call per question: the model tags its reply [S] (store) or [G] (general) ---------- */
+const GEM_STREAM=`
+OVERRIDES (these replace the "Output" line and the 110-word limit above). Answer ANY message, whatever the topic. Write plain text only: no JSON, no markdown symbols.
+Line 1 must be exactly [S] if the message is about this business (stock, orders, sales, costs, suppliers, staff, marketing, branches, forecasts, design tasks, what-if or "why" questions about it, or a follow-up on your earlier replies), otherwise [G].
+For [S]: ground every number in STATE and reason over it (compare, compute, estimate, explain causes), naming the key figures. If a figure is missing, give the best estimate and state the assumption briefly. Never invent store data.
+For [G]: answer from your general knowledge, accurately and directly. If you are not sure of a detail, leave it out or say so. Do not mention the store.
+Keep replies short (about 30-110 words) and vary your wording naturally.
+Only for [S], if an action would help: after the answer write a line <<ACTIONS>> then a JSON array of actions in the schema above, and nothing after it. Never write <<ACTIONS>> otherwise.`;
+function splitStream(t){
+  const m=/^\s*\[(S|G)\]\s*/.exec(t);
+  const tag=m?m[1]:null;
+  let body=m?t.slice(m[0].length):(/^\s*\[?[SG]?\]?\s*$/.test(t)?"":t);
+  const k=body.indexOf("<<ACTIONS>>");
+  let reply=k>=0?body.slice(0,k):body;const actions=k>=0?body.slice(k+11):"";
+  reply=reply.replace(/<{1,2}[A-Z]*>?$/,"");
+  return {tag,reply:reply.trim(),actions:actions.trim()};
+}
+async function gemStream(body,signal0,onText){
+  const own=GemCfg.key(),tc=new AbortController();let tm=setTimeout(()=>tc.abort(),30000);
+  signal0?.addEventListener("abort",()=>tc.abort());
+  try{
+    const res=own
+      ?await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":streamGenerateContent?alt=sse",{method:"POST",signal:tc.signal,headers:{"Content-Type":"application/json","x-goog-api-key":own},body:JSON.stringify(body)})
+      :await fetch(AGENT_URL,{method:"POST",signal:tc.signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({...body,stream:true})});
+    if(!res.ok){let j=null;try{j=await res.json();}catch(e){}const err=new Error(j?.error?.message||("HTTP "+res.status));err.status=res.status;throw err;}
+    if(!own&&res.headers.get("X-Model"))gemLastModel=res.headers.get("X-Model");
+    clearTimeout(tm);tm=setTimeout(()=>tc.abort(),60000);
+    const rd=res.body.getReader(),dec=new TextDecoder();let buf="",text="";
+    for(;;){
+      const {value,done}=await rd.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});let k;
+      while((k=buf.indexOf("\n"))>=0){
+        const line=buf.slice(0,k).trim();buf=buf.slice(k+1);
+        if(!line.startsWith("data:"))continue;
+        try{const j=JSON.parse(line.slice(5));const t=(j?.candidates?.[0]?.content?.parts||[]).map(p=>p.thought?"":(p.text||"")).join("");if(t){text+=t;onText(text);}}catch(e){}
+      }
+    }
+    return text;
+  }catch(e){if(e.name==="AbortError"&&!signal0?.aborted){const err=new Error("timeout");err.status=504;throw err;}throw e;}
   finally{clearTimeout(tm);}
 }
-async function gemCall0(body,signal,own){
-  const res=own
-    ?await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(GemCfg.model())+":generateContent",{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":own},body:JSON.stringify(body)})
-    :await fetch(AGENT_URL,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(!own&&res.headers.get("X-Model"))gemLastModel=res.headers.get("X-Model");
-  let j=null;try{j=await res.json();}catch(e){}
-  if(!res.ok){const err=new Error(j?.error?.message||("HTTP "+res.status));err.status=res.status;throw err;}
-  const c=j?.candidates?.[0];
-  const text=(c?.content?.parts||[]).map(p=>p.text||"").join("").trim();
-  const seen=new Set(),sources=[];
-  for(const g of c?.groundingMetadata?.groundingChunks||[]){const u=g?.web?.uri;if(u&&/^https?:\/\//.test(u)&&!seen.has(u)){seen.add(u);sources.push({url:u,title:String(g.web.title||u).slice(0,60)});}}
-  return {text,sources:sources.slice(0,4)};
-}
-function gemJSON(t){
-  t=String(t||"").replace(/^```(?:json)?/i,"").replace(/```$/,"").trim();
-  try{return JSON.parse(t);}catch(e){}
-  const a=t.indexOf("{"),b=t.lastIndexOf("}");if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1));}catch(e){}}
-  return null;
-}
-const GEM_ROUTE=`
-ROUTING (overrides the Output line above). First decide the scope of the owner's latest message:
-- "store": anything about this business (stock, orders, sales, costs, suppliers, staff, marketing, branches, forecasts, design tasks, what-if and "why" questions about it, or a follow-up on your earlier replies). Ground every number in STATE. You SHOULD reason: compare, compute, estimate and explain causes from the data (e.g. effect of a price change on margin, why profit moved, which day is weakest), showing the key figures you used. If a needed figure is truly absent, give the best estimate from what is there and state the assumption in one short clause. Never invent store data.
-- "general": anything not about this business (general knowledge, religion, science, news, weather, coding, advice, casual chat). Do NOT answer it here: return an empty reply and no actions; a second step answers it.
-Vary your wording naturally; do not repeat a previous reply verbatim.
-Output ONLY one JSON object: {"scope":"store"|"general","reply":"<your message, empty when general>","actions":[ ... ]}`;
-async function gemAsk(A,signal){
-  const turns=asstTurns().filter(m=>!m.local).map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));
-  const r1=await gemCall({system_instruction:{parts:[{text:ASST_RULES()+GEM_ROUTE+"\n\nSTATE (live):\n"+JSON.stringify(allData())}]},contents:turns,generationConfig:{responseMimeType:"application/json",temperature:0.5}},signal);
-  const j=gemJSON(r1.text);
-  if(j&&j.scope!=="general"){
-    return {content:String(j.reply||"").trim()||L("ما عندي رد واضح، جرّب صياغة ثانية.","I don't have a clear answer; try rephrasing."),actions:(Array.isArray(j.actions)?j.actions:[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:"store"};
-  }
-  if(!j&&r1.text)return {content:r1.text.slice(0,900),actions:[],via:"store"};
-  const sys={parts:[{text:"You are a capable general assistant inside the Khudra salad-bar console. This question is not about the store. Answer it directly, correctly and helpfully, whatever the topic; reason step by step internally and give the conclusion with a short explanation. Use Google Search results when the question depends on facts or anything recent. Keep it brief (at most ~120 words), plain sentences, no markdown symbols. If you are not sure, say so. Reply in "+(lang==="ar"?"clear Modern Standard Arabic":"English")+"."}]};
-  let r2;
-  try{r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),...(GemCfg.key()?{tools:[{google_search:{}}]}:{}),generationConfig:{temperature:0.4}},signal);}
-  catch(e){if(e.name==="AbortError"||e.status===401||e.status===429||!GemCfg.key())throw e;r2=await gemCall({system_instruction:sys,contents:turns.slice(-8),generationConfig:{temperature:0.4}},signal);}
-  return {content:r2.text||L("لم أصل إلى إجابة واضحة.","I could not reach a clear answer."),actions:[],via:r2.sources.length?"web":"model",sources:r2.sources};
+async function gemAskStream(A,signal,onPartial){
+  const turns=asstTurns().filter(m=>!m.local&&!m.streaming).map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));
+  const text=await gemStream({system_instruction:{parts:[{text:ASST_RULES()+GEM_STREAM+"\n\nSTATE (live):\n"+JSON.stringify(allData())}]},contents:turns,generationConfig:{temperature:0.5}},signal,t=>onPartial(splitStream(t)));
+  const p=splitStream(text);
+  let acts=[];
+  if(p.actions){const a=p.actions.indexOf("["),b=p.actions.lastIndexOf("]");try{acts=JSON.parse(p.actions.slice(a,b+1));}catch(e){acts=[];}}
+  if(!p.reply)throw Object.assign(new Error("empty"),{status:502});
+  return {content:p.reply,actions:(Array.isArray(acts)?acts:[]).map(a=>normAction(a,A)).filter(Boolean).slice(0,3),via:p.tag==="G"?"model":"store"};
 }
 async function gemLoadModels(){
   try{
@@ -2347,14 +2351,24 @@ async function askAsst(q){
   try{
     let r=null,note="";
     if(agentOn()){
-      try{r=await gemAsk(A,sig);}
+      const live={role:"assistant",content:"",streaming:true};let shown=false;
+      try{
+        r=await gemAskStream(A,sig,p=>{
+          if(!p.reply)return;live.content=p.reply;live.via=p.tag==="G"?"model":p.tag?"store":undefined;
+          if(!shown){shown=true;asst.push(live);renderAdmin();return;}
+          const el=document.getElementById("cLive");if(el){el.textContent=p.reply;const cl=$('cLog');if(cl)cl.scrollTop=cl.scrollHeight;}
+        });
+        if(shown){Object.assign(live,r);delete live.streaming;r=null;live.__done=true;}
+      }
       catch(e){
+        if(shown){const i=asst.indexOf(live);if(i>=0)asst.splice(i,1);}
         if(e.name==="AbortError")throw e;
         note=({504:L("الوكيل الذكي تأخر في الرد.","The smart agent took too long."),401:L("مفتاح Gemini غير صحيح.","The Gemini key is not valid."),403:L("الوكيل الذكي رفض الطلب.","The smart agent refused the request."),429:L("الوكيل الذكي مشغول أو وصل حد الاستخدام.","The smart agent is busy or at its usage limit."),503:L("الوكيل الذكي لم يُجهَّز بعد.","The smart agent is not set up yet.")})[e.status]||L("الوكيل الذكي غير متاح الآن.","The smart agent is unavailable right now.");
       }
     }
-    if(!r){r=await builtinReply(q,A,sig);if(note)r.content=note+" "+L("هذه إجابة الوضع الأساسي:","Basic-mode answer:")+"\n"+r.content;}
-    asst.push({role:"assistant",...r});
+    if(!r&&!asst.at(-1)?.__done){r=await builtinReply(q,A,sig);if(note)r.content=note+" "+L("هذه إجابة الوضع الأساسي:","Basic-mode answer:")+"\n"+r.content;}
+    if(r)asst.push({role:"assistant",...r});
+    if(asst.at(-1)?.__done)delete asst.at(-1).__done;
   }catch(e){
     if(e.name==="AbortError")asst.pop();
     else asst.push({role:"assistant",local:true,content:L("ما قدرت أجاوب الحين. جرّب مرة ثانية.","Couldn't answer right now. Try again.")});
@@ -2435,7 +2449,7 @@ function asstPanel(){
   const vis=asst.map((m,i)=>({m,i})).filter(x=>!x.m.hidden);
   return `<section class="panel ai asst">
     <div class="ph2"><div><h2>${L("مساعد خُضرة","Khudra assistant")}</h2><p class="muted">${L("وكيل المشروع: يجاوب أسئلة المحل من بياناته ويحلّلها، ويقترح ويستأذنك قبل ما ينفّذ، ويجاوب أي سؤال آخر.","The project's own agent: answers and analyses store questions from its data, proposes actions and asks before acting, and answers anything else.")}</p></div></div>
-    <ul class="chatlog" id="cLog">${vis.length?vis.map(({m,i})=>`<li class="${m.role==="user"?"me":"bot"}">${m.via?`<span class="via v-${m.via}">${m.via==="web"?L("من البحث","From search"):m.via==="model"?L("من معرفة النموذج","From the model"):m.via==="calc"?L("حساب","Calculation"):L("من بيانات المحل","From store data")}</span>`:''}${esc(m.content)}${(m.sources||[]).length?`<span class="srcs">${m.sources.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)}</a>`).join('')}</span>`:''}${(m.actions||[]).map((a,ai)=>actionCard(a,i,ai)).join('')}</li>`).join(''):`<li class="bot">${L("هلا! أنا شايف المخزون والمبيعات والتكاليف والموظفين لحظة بلحظة. وش تبي نبدأ فيه؟","Hi! I can see stock, sales, costs and staffing live. Where do you want to start?")}</li>`}${asstBusy?`<li class="bot thinking">${L("يراجع بيانات المحل…","Checking the store's data…")}</li>`:''}</ul>
+    <ul class="chatlog" id="cLog">${vis.length?vis.map(({m,i})=>`<li class="${m.role==="user"?"me":"bot"}"${m.streaming?' id="cLiveLi"':''}>${m.via?`<span class="via v-${m.via}">${m.via==="web"?L("من البحث","From search"):m.via==="model"?L("من معرفة النموذج","From the model"):m.via==="calc"?L("حساب","Calculation"):L("من بيانات المحل","From store data")}</span>`:''}${m.streaming?`<span id="cLive">${esc(m.content)}</span>`:esc(m.content)}${(m.sources||[]).length?`<span class="srcs">${m.sources.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)}</a>`).join('')}</span>`:''}${(m.actions||[]).map((a,ai)=>actionCard(a,i,ai)).join('')}</li>`).join(''):`<li class="bot">${L("هلا! أنا شايف المخزون والمبيعات والتكاليف والموظفين لحظة بلحظة. وش تبي نبدأ فيه؟","Hi! I can see stock, sales, costs and staffing live. Where do you want to start?")}</li>`}${asstBusy&&!asst.some(x=>x.streaming)?`<li class="bot thinking">${L("يراجع بيانات المحل…","Checking the store's data…")}</li>`:''}</ul>
     <div class="qsug">${sug.map(q=>`<button type="button" class="qs">${q}</button>`).join('')}</div>
     <form class="chatform" id="cForm"><input id="cQ" maxlength="400" placeholder="${L("اكتب سؤالك أو طلبك…","Type a question or a request…")}" aria-label="message" autocomplete="off"><button class="btn sm" type="submit" ${asstBusy?'disabled':''}>${L("أرسل","Send")}</button>${asstBusy?`<button class="link" type="button" id="cStop">${L("إيقاف","Stop")}</button>`:''}</form>
     ${gemPanel()}
