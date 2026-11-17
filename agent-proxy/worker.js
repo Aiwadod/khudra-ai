@@ -4,7 +4,7 @@
 //
 // Free-tier reality (Nov 2026): Flash models allow ~20 requests/day, Flash-Lite ~500/day,
 // and Google Search grounding is not included for the newer models. So the Worker tries
-// models in order and falls back on 429/503/404, and drops the search tool if Google
+// models in order (Flash-Lite first: it has the larger free quota and answers fastest) and falls back on 429/503/404/timeouts, and drops the search tool if Google
 // refuses it. The header X-Model says which model answered, X-Search says if search ran.
 //
 // Limits (best effort, not a security boundary against a determined attacker):
@@ -15,10 +15,11 @@
 // Use a Gemini key with no billing attached: then the worst case is hitting the free quota, not a bill.
 
 const ALLOWED_ORIGINS = ["https://aiwadod.github.io"];
-const CHAIN = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash"];
+const CHAIN = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash"];
 const MAX_BODY_BYTES = 300000;
 const MAX_OUTPUT_TOKENS = 4096;
 const PER_MINUTE = 12;
+const ATTEMPT_MS = 25000;
 const hits = new Map();
 
 export default {
@@ -66,11 +67,18 @@ export default {
     for (const model of order.slice(0, 4)) {
       for (let pass = 0; pass < 2; pass++) {
         const payload = search ? { ...body, tools: [{ google_search: {} }] } : body;
-        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-          body: JSON.stringify(payload),
-        });
+        let r;
+        try {
+          r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(ATTEMPT_MS),
+          });
+        } catch (e) {
+          last = JSON.stringify({ error: { message: "Model timed out" } }); lastModel = model;
+          break;
+        }
         if (r.ok) return new Response(r.body, { status: 200, headers: { ...cors, "Content-Type": "application/json", "X-Model": model, "X-Search": search ? "on" : "off" } });
         last = await r.text(); lastModel = model;
         if (search && (r.status === 429 || r.status === 400 || r.status === 403)) { search = false; continue; }
