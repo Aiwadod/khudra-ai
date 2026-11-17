@@ -70,7 +70,7 @@ flowchart LR
 |---|---|
 | Forecast model, backtest, newsvendor simulation | Real data, run, numbers above |
 | Assistant routing, guardrails, approval flow | Implemented and tested (see above) |
-| Smart agent (Gemini) | Deployed and answering live through the Worker. Routing, action handling and fallbacks tested against a mocked API. **Answer quality is not measured yet** |
+| Smart agent (Gemini) | Deployed and answering live through the Worker. Routing, action handling and fallbacks tested against a mocked API. Live spot check (Flash-Lite): a price what-if was answered with correct figures; a general religious question was right on the main fact but added a wrong detail. **Answer quality is not measured systematically yet** |
 | Basic mode | Keyword-based; wording outside its vocabulary falls through to Wikipedia retrieval, which is hit-and-miss |
 | `agent_eval/` | Scenarios and a grading harness from an earlier version; needs adapting to the Gemini path before it can produce a score |
 | Store data inside the app (orders, stock, branches, costs) | Synthetic examples |
